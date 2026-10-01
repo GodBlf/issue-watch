@@ -223,7 +223,7 @@ async fn http_body_timeout_marks_repository_failure_and_later_checks_continue() 
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut request = [0; 2048];
-        stream.read(&mut request).await.unwrap();
+        assert!(stream.read(&mut request).await.unwrap() > 0);
         stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n[").await.unwrap();
         ready_tx.send(()).unwrap();
         // Hold the body open: headers succeeded, JSON decoding must still time out.
