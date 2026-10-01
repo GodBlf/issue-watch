@@ -18,6 +18,25 @@ async fn main() -> Result<()> {
         .init();
     let config_path = std::env::var("ISSUE_WATCH_CONFIG").unwrap_or_else(|_| "config.toml".into());
     let config = Config::load(&config_path)?;
+    let health = issue_watch::health::Health::new(
+        config
+            .github_token
+            .iter()
+            .cloned()
+            .chain(std::iter::once(config.qq_app_secret.clone()))
+            .chain(std::env::var("QQ_ACCESS_TOKEN").ok())
+            .collect(),
+    );
+    let health_bind =
+        std::env::var("ISSUE_WATCH_HEALTH_BIND").unwrap_or_else(|_| "127.0.0.1:8080".into());
+    let health_listener = tokio::net::TcpListener::bind(&health_bind).await?;
+    info!(address = %health_listener.local_addr()?, "health dashboard listening");
+    let health_server = health.clone();
+    tokio::spawn(async move {
+        if let Err(error) = issue_watch::health::serve(health_listener, health_server).await {
+            warn!(%error, "health dashboard stopped");
+        }
+    });
     eprintln!("Opening monitoring database");
     let store = Store::open(&config.file.database_path)?;
     for repository in &config.file.repositories {
@@ -49,6 +68,9 @@ async fn main() -> Result<()> {
             }
         },
     };
+    if let Some(token) = &access_token {
+        health.add_secret(token.clone());
+    }
     let sender = access_token.clone().map(QqHttpSender::new);
     eprintln!("Starting monitoring loop");
     if let Some(token) = access_token.clone() {
