@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Issue 监控 · 健康状态</title>
+<style>
+:root{font:16px/1.6 system-ui,sans-serif;color:#183047;background:#eff3f6}body{max-width:1000px;margin:40px auto;padding:0 20px}h1{margin-bottom:8px}header p{color:#526779}section{background:white;border:1px solid #d7e1e8;border-radius:12px;padding:24px;margin:20px 0}#status{font-size:30px;font-weight:700}#connection{background:#fff2d0;border-left:4px solid #b78215;padding:12px}dl{display:grid;grid-template-columns:140px 1fr;gap:8px}dd{margin:0;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}small{color:#526779}.component{border-top:1px solid #e4e9ed;padding:12px 0}.status-normal{color:#18724d}.status-warning{color:#976109}.status-error{color:#b32626}.status-unknown{color:#526779}h2{font-size:20px}h3{font-size:17px}
+</style>
+</head>
+<body>
+<header><h1>Issue 监控健康状态</h1><p>本次运行的状态 · 每 10 秒自动刷新 · 只读</p></header>
+<p id="connection" role="alert" hidden></p>
+<section aria-live="polite"><small>整体状态</small><div id="status" class="status-unknown">未知</div>
+<dl><dt>数据更新时间</dt><dd id="updated">尚无数据</dd><dt>启动时间</dt><dd id="started">未知</dd><dt>运行时长</dt><dd id="uptime">未知</dd></dl></section>
+<p id="reasons"></p>
+<section><h2>业务观察</h2><div id="components">尚无检查结果，等待业务观察。</div></section>
+<small>连接失败仅表示网页暂时无法取得状态，不能确定程序、服务器或 SSH 隧道的具体情况。服务器不可达时，新打开页面可能直接显示浏览器连接错误。时间使用 UTC。</small>
+<script>
+const labels = {normal:'正常',warning:'警告',error:'异常',unknown:'未知'};
+const names = {github:'GitHub 检查',qq_gateway:'QQ 连接',qq_binding:'通知目标绑定',qq_auth:'QQ 鉴权',qq_delivery:'实际通知发送',notification_queue:'通知队列',progress:'业务推进',overall:'整体健康'};
+const fieldNames = {status:'状态',error:'当前错误',repository:'监控仓库',repositories:'监控仓库',last_attempt_at:'最近尝试时间',last_success_at:'最近成功时间',consecutive_failures:'连续失败次数',pending:'待发送',retrying:'重试中',permanent_failed:'永久失败',connected:'连接状态',bound:'绑定状态',result:'结果',at:'观察时间',active:'正在处理',stage:'当前步骤',last_progress_at:'最近推进时间',threshold_seconds:'卡住阈值（秒）',stalled:'已停止推进',failures:'失败记录',number:'Issue 编号',state:'通知状态',enqueued_at:'入队时间',sent_at:'发送时间',last_error:'失败原因',sent:'已发送',errors:'失败记录'};
+const values = {...labels,unverified:'未验证',verified:'已验证',failed:'失败',sent:'已发送',retrying:'重试中',permanent_failed:'永久失败',permanent_failure:'永久失败',pending:'待发送',waiting:'等待下一轮检查',working:'正在处理',checking_repository:'检查仓库',page_complete:'完成一页检查',repository_complete:'完成仓库检查',sending:'发送通知',delivery_started:'开始投递',delivery_complete:'投递结束',notification_sent:'通知发送完成',notification_complete:'通知处理完成'};
+let lastData = null;
+let loading = false;
+function renderDetails(value, prefix='') {
+  if (value === null || value === undefined) return '未知';
+  if (Array.isArray(value)) return value.map(item=>renderDetails(item,prefix)).join('\n\n');
+  if (typeof value === 'object') return Object.entries(value).map(([key,item])=>(fieldNames[key]||key)+'：'+renderDetails(item,prefix)).join('\n');
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  if (value === 'recorded') return '结果已记录';
+  if (value === 'idle') return '等待下一轮检查';
+  return values[value] || String(value);
+}
+function render(data) {
+  const status = labels[data.status] ? data.status : 'unknown';
+  document.getElementById('status').textContent = labels[status];
+  document.getElementById('status').className = 'status-'+status;
+  document.getElementById('updated').textContent = data.updated_at;
+  document.getElementById('started').textContent = data.started_at;
+  document.getElementById('uptime').textContent = data.uptime_seconds+' 秒';
+  const reasons=data.components?.overall?.details?.reasons||[];
+  document.getElementById('reasons').textContent=reasons.map(reason=>(names[reason.component]||reason.component)+'：'+(labels[reason.status]||'未知')).join('；');
+  const container=document.getElementById('components');
+  container.replaceChildren();
+  const entries=Object.entries(data.components||{}).filter(([name])=>!['overall','github_progress','notification_progress'].includes(name));
+  if (!entries.length) container.textContent='尚无检查结果，等待业务观察。';
+  for (const [name,component] of entries) {
+    const block=document.createElement('div'); block.className='component';
+    const heading=document.createElement('h3'); heading.textContent=(names[name]||name)+' · '+(labels[component.status]||'未知');
+    const detail=document.createElement('pre'); detail.textContent=renderDetails(component.details);
+    block.append(heading,detail); container.append(block);
+  }
+}
+async function refresh() {
+  if (loading) return;
+  loading=true;
+  try {
+    const response=await fetch('/api/status',{cache:'no-store',signal:AbortSignal.timeout(8000)});
+    if (!response.ok) throw new Error('unreachable');
+    const data=await response.json();
+    if (!data || !labels[data.status] || typeof data.updated_at!=='string') throw new Error('invalid status');
+    render(data); lastData=data;
+    document.getElementById('connection').hidden=true;
+  } catch (_) {
+    document.getElementById('status').textContent='未知';
+    document.getElementById('status').className='status-unknown';
+    const banner=document.getElementById('connection'); banner.hidden=false;
+    banner.textContent=lastData?'连接失败：下方为上次取得的数据，当前状态未知。':'未知 / 不可达：尚未取得状态数据。';
+  } finally { loading=false; }
+}
+refresh();
+setInterval(refresh,10000);
+</script>
+</body>
+</html>
