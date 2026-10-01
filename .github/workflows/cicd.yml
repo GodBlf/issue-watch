@@ -68,7 +68,8 @@ jobs:
       - name: Verify production Compose with isolated test data
         env:
           IMAGE: ghcr.io/godblf/issue-watch:sha-${{ github.sha }}
-        run: python3 tests/container_smoke.py "$IMAGE"
+        # SQLite is created by the production image as root; verify with the same ownership.
+        run: sudo python3 tests/container_smoke.py "$IMAGE"
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         if: github.event_name == 'push'
         with:

@@ -41,7 +41,7 @@ def main():
             return json.loads(response.split("\n\n", 1)[1])
 
         def wait_for(predicate):
-            for _ in range(40):
+            for _ in range(120):
                 try:
                     status = snapshot()
                     if predicate(status):
@@ -58,7 +58,7 @@ def main():
             assert str(service["ports"][0]["published"]) == "8081"
             assert {v["target"] for v in service["volumes"]} == {"/app/config", "/app/data"}
             run("up", "-d", "--no-build", "--pull", "never")
-            wait_for(lambda _: True)
+            wait_for(lambda status: "qq_binding" in status["components"])
             database = root / "data/issue-watch.sqlite3"
             assert database.exists()
             replacement = config.with_suffix(".tmp")

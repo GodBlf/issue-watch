@@ -78,3 +78,5 @@ python3 tests/container_smoke.py issue-watch:check
 ```
 
 部署入口测试在 Linux 运行，用临时 SQLite 和外部命令替身模拟服务管理、Docker、主分支查询和健康 HTTP 请求。镜像测试实际启动生产 Compose，用隔离网络和测试数据验证配置热加载及广播订阅、监控进度和通知投递记录在重启后保留；通过后才发布镜像。测试不会连接 QQ 用户或生产数据库。
+
+Linux 上镜像默认以 root 创建数据库，镜像测试需使用 `sudo python3 tests/container_smoke.py issue-watch:check`，以便写入测试状态并清理临时文件；Actions 已使用同样方式运行。
