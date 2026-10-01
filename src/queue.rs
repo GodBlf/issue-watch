@@ -4,6 +4,7 @@ use crate::{
 };
 use anyhow::Result;
 use chrono::{Duration, Utc};
+use tokio::time::{sleep, Duration as TokioDuration};
 
 pub async fn deliver_pending<S: MessageSink>(store: &Store, sink: &S) -> Result<usize> {
     let target = match store.get_bound_user()? {
@@ -12,7 +13,10 @@ pub async fn deliver_pending<S: MessageSink>(store: &Store, sink: &S) -> Result<
     };
     let pending = store.pending_notifications(Utc::now())?;
     let mut delivered = 0;
-    for issue in pending {
+    for (index, issue) in pending.into_iter().enumerate() {
+        if index > 0 {
+            sleep(TokioDuration::from_secs(3)).await;
+        }
         match sink.send(&target, &render_notification(&issue)).await {
             Ok(()) => {
                 store.mark_sent(&issue)?;

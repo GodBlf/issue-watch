@@ -64,7 +64,7 @@ impl IssueSource for GithubClient {
     ) -> Result<Vec<GithubIssue>> {
         let url = format!("https://api.github.com/repos/{repository}/issues");
         let mut request = self.client.get(url).query(&[
-            ("state", "open"),
+            ("state", "all"),
             ("sort", "created"),
             ("direction", "asc"),
             ("per_page", "100"),

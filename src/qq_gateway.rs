@@ -12,20 +12,37 @@ struct GatewayEvent {
     t: Option<String>,
 }
 
-pub async fn run_gateway(gateway_url: &str, access_token: &str, store: &Store) -> Result<()> {
+pub async fn run_gateway(gateway_url: &str, access_token: &str, database_path: &str) -> Result<()> {
+    let store = Store::open(database_path)?;
     let (mut socket, _) = connect_async(gateway_url)
         .await
         .context("connect QQ gateway")?;
-    let mut sequence = serde_json::Value::Null;
-    while let Some(message) = socket.next().await {
-        let message = message?;
+    let mut sequence: Option<u64> = None;
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
+    loop {
+        let message = tokio::select! {
+            _ = heartbeat.tick() => {
+                socket.send(Message::Text(serde_json::json!({"op": 1, "d": sequence}).to_string().into())).await?;
+                continue;
+            }
+            message = socket.next() => match message { Some(message) => message?, None => break }
+        };
         if let Message::Text(text) = message {
             let event: GatewayEvent = serde_json::from_str(&text)?;
             if let Some(seq) = event.s {
-                sequence = serde_json::json!(seq);
+                sequence = Some(seq);
             }
             match event.op {
                 10 => {
+                    if let Some(interval) = event
+                        .d
+                        .as_ref()
+                        .and_then(|d| d.get("heartbeat_interval"))
+                        .and_then(|v| v.as_u64())
+                    {
+                        heartbeat =
+                            tokio::time::interval(std::time::Duration::from_millis(interval));
+                    }
                     let identify = serde_json::json!({"op": 2, "d": {"token": format!("QQBot {access_token}"), "intents": (1u64 << 25), "shard": [0, 1], "properties": {"$os": "issue-watch", "$browser": "issue-watch", "$device": "issue-watch"}}});
                     socket
                         .send(Message::Text(identify.to_string().into()))
@@ -48,15 +65,7 @@ pub async fn run_gateway(gateway_url: &str, access_token: &str, store: &Store) -
                         }
                     }
                 }
-                1 => {
-                    socket
-                        .send(Message::Text(
-                            serde_json::json!({"op": 1, "d": sequence})
-                                .to_string()
-                                .into(),
-                        ))
-                        .await?;
-                }
+                7 | 9 => break,
                 _ => {}
             }
         }

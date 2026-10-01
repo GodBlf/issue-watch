@@ -34,7 +34,23 @@ async fn main() -> Result<()> {
             }
         },
     };
-    let sender = access_token.map(QqHttpSender::new);
+    let sender = access_token.clone().map(QqHttpSender::new);
+    if let Some(token) = access_token.clone() {
+        let gateway_url = std::env::var("QQ_GATEWAY_URL")
+            .unwrap_or_else(|_| "wss://api.sgroup.qq.com/websocket/".into());
+        let database_path = config.file.database_path.clone();
+        tokio::spawn(async move {
+            loop {
+                match issue_watch::qq_gateway::run_gateway(&gateway_url, &token, &database_path)
+                    .await
+                {
+                    Ok(()) => warn!("QQ gateway disconnected; reconnecting"),
+                    Err(error) => warn!(%error, "QQ gateway failed; reconnecting"),
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        });
+    }
     info!(
         repositories = config.file.repositories.len(),
         poll_interval_seconds = config.file.poll_interval_seconds,

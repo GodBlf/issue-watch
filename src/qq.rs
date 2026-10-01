@@ -54,6 +54,7 @@ impl QqHttpSender {
 
 #[derive(Deserialize)]
 struct ErrorBody {
+    code: Option<i64>,
     message: Option<String>,
 }
 #[async_trait]
@@ -71,10 +72,30 @@ impl MessageSink for QqHttpSender {
             return Ok(());
         }
         let status = response.status();
-        let body = response
-            .json::<ErrorBody>()
-            .await
-            .unwrap_or(ErrorBody { message: None });
+        let body = response.json::<ErrorBody>().await.unwrap_or(ErrorBody {
+            code: None,
+            message: None,
+        });
+        if body.code == Some(40054010) {
+            let fallback = text
+                .lines()
+                .filter(|line| !line.starts_with("链接:"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let retry = self
+                .client
+                .post(format!("{}/{}/messages", self.endpoint, user_openid))
+                .bearer_auth(&self.access_token)
+                .json(&serde_json::json!({"content": fallback}))
+                .send()
+                .await;
+            if retry
+                .map(|response| response.status().is_success())
+                .unwrap_or(false)
+            {
+                return Ok(());
+            }
+        }
         let message = body.message.unwrap_or_else(|| format!("HTTP {status}"));
         if status.as_u16() == 429 || status.is_server_error() {
             Err(SendError::Retryable(message))
@@ -115,5 +136,13 @@ mod tests {
             url: "https://example.com".into(),
         };
         assert!(render_notification(&issue).chars().count() <= 1800);
+    }
+
+    #[test]
+    fn binds_only_the_first_private_target() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(bind_from_private_message(&store, "/bind", "openid-1").unwrap());
+        assert!(!bind_from_private_message(&store, "/bind", "openid-2").unwrap());
+        assert_eq!(store.get_bound_user().unwrap().as_deref(), Some("openid-1"));
     }
 }
