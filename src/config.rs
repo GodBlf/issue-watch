@@ -33,8 +33,12 @@ impl Config {
             fs::read_to_string(path).with_context(|| format!("read config {}", path.display()))?;
         let file: FileConfig = toml::from_str(&content).context("parse TOML config")?;
         validate_repositories(&file.repositories)?;
-        let qq_app_id = env::var("QQ_APP_ID").context("QQ_APP_ID is required")?;
-        let qq_app_secret = env::var("QQ_APP_SECRET").context("QQ_APP_SECRET is required")?;
+        let qq_app_id = env::var("QQ_APP_ID")
+            .or_else(|_| env::var("QQ_BOT_APP_ID"))
+            .context("QQ_APP_ID or QQ_BOT_APP_ID is required")?;
+        let qq_app_secret = env::var("QQ_APP_SECRET")
+            .or_else(|_| env::var("QQ_BOT_CLIENT_SECRET"))
+            .context("QQ_APP_SECRET or QQ_BOT_CLIENT_SECRET is required")?;
         Ok(Self {
             file,
             qq_app_id,
