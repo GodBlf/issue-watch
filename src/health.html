@@ -27,6 +27,8 @@ function renderDetails(value, prefix='') {
   if (Array.isArray(value)) return value.map(item=>renderDetails(item,prefix)).join('\n\n');
   if (typeof value === 'object') return Object.entries(value).map(([key,item])=>(fieldNames[key]||key)+'：'+renderDetails(item,prefix)).join('\n');
   if (typeof value === 'boolean') return value ? '是' : '否';
+  if (value === 'recorded') return '结果已记录';
+  if (value === 'idle') return '等待下一轮检查';
   return values[value] || String(value);
 }
 function render(data) {
