@@ -223,6 +223,71 @@ async fn http_auth_denial_is_distinct_from_other_permanent_errors() {
     ));
     server.abort();
 }
+
+#[tokio::test]
+async fn refreshing_sender_retries_after_authentication_denial() {
+    use axum::{
+        extract::State,
+        http::{HeaderMap, StatusCode},
+        routing::post,
+        Json, Router,
+    };
+    use issue_watch::qq::RefreshingQqHttpSender;
+    use serde_json::json;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    #[derive(Clone)]
+    struct TestState(Arc<AtomicUsize>);
+    async fn token() -> Json<serde_json::Value> {
+        Json(json!({"access_token": "fresh-token"}))
+    }
+    async fn message(
+        State(state): State<TestState>,
+        headers: HeaderMap,
+    ) -> (StatusCode, &'static str) {
+        state.0.fetch_add(1, Ordering::SeqCst);
+        if headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            == Some("QQBot fresh-token")
+        {
+            (StatusCode::OK, "{}")
+        } else {
+            (StatusCode::UNAUTHORIZED, "denied")
+        }
+    }
+
+    let requests = Arc::new(AtomicUsize::new(0));
+    let state = TestState(requests.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new()
+                .route("/token", post(token))
+                .route("/{id}/messages", post(message))
+                .with_state(state),
+        )
+        .await
+        .unwrap()
+    });
+
+    let sender = RefreshingQqHttpSender::with_endpoints(
+        "stale-token".into(),
+        "app-id".into(),
+        "app-secret".into(),
+        base.clone(),
+        format!("{base}/token"),
+    );
+    sender.send("user", "hello").await.unwrap();
+    assert_eq!(sender.send("user", "hello").await.unwrap(), ());
+    assert_eq!(requests.load(Ordering::SeqCst), 3);
+    server.abort();
+}
 #[tokio::test]
 async fn body_timeout_is_retryable_and_visible_without_real_qq() {
     use axum::{body::Body, routing::post, Router};

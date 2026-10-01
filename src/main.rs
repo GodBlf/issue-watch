@@ -1,6 +1,6 @@
 use anyhow::Result;
 use issue_watch::{
-    github::GithubClient, github_health::GithubHealth, qq::QqHttpSender,
+    github::GithubClient, github_health::GithubHealth, qq::RefreshingQqHttpSender,
     queue::deliver_pending_observed, Config, Store,
 };
 use tracing::{info, warn};
@@ -78,7 +78,13 @@ async fn main() -> Result<()> {
     if let Some(token) = &access_token {
         health.add_secret(token.clone());
     }
-    let sender = access_token.clone().map(QqHttpSender::new);
+    let sender = access_token.clone().map(|token| {
+        RefreshingQqHttpSender::new(
+            token,
+            config.qq_app_id.clone(),
+            config.qq_app_secret.clone(),
+        )
+    });
     eprintln!("Starting monitoring loop");
     if let Some(token) = access_token.clone() {
         let configured_gateway = std::env::var("QQ_GATEWAY_URL").ok();
