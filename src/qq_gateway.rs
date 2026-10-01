@@ -18,7 +18,10 @@ pub async fn run_gateway(gateway_url: &str, access_token: &str, database_path: &
         .await
         .context("connect QQ gateway")?;
     let mut sequence: Option<u64> = None;
-    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
+    let mut heartbeat = tokio::time::interval_at(
+        tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(30),
+    );
     loop {
         let message = tokio::select! {
             _ = heartbeat.tick() => {
@@ -40,8 +43,11 @@ pub async fn run_gateway(gateway_url: &str, access_token: &str, database_path: &
                         .and_then(|d| d.get("heartbeat_interval"))
                         .and_then(|v| v.as_u64())
                     {
-                        heartbeat =
-                            tokio::time::interval(std::time::Duration::from_millis(interval));
+                        let duration = std::time::Duration::from_millis(interval.max(1));
+                        heartbeat = tokio::time::interval_at(
+                            tokio::time::Instant::now() + duration,
+                            duration,
+                        );
                     }
                     let identify = serde_json::json!({"op": 2, "d": {"token": format!("QQBot {access_token}"), "intents": (1u64 << 25), "shard": [0, 1], "properties": {"$os": "issue-watch", "$browser": "issue-watch", "$device": "issue-watch"}}});
                     socket
@@ -49,7 +55,11 @@ pub async fn run_gateway(gateway_url: &str, access_token: &str, database_path: &
                         .await?;
                 }
                 0 => {
+                    if event.t.as_deref() == Some("READY") {
+                        tracing::info!("QQ gateway READY; private messages can now be received");
+                    }
                     if event.t.as_deref() == Some("C2C_MESSAGE_CREATE") {
+                        tracing::info!("QQ private message received");
                         if let Some(data) = event.d {
                             let content =
                                 data.get("content").and_then(|v| v.as_str()).unwrap_or("");
@@ -59,7 +69,8 @@ pub async fn run_gateway(gateway_url: &str, access_token: &str, database_path: &
                                 .and_then(|v| v.as_str());
                             if content.trim() == "/bind" {
                                 if let Some(openid) = openid {
-                                    store.bind_user(openid)?;
+                                    let bound = store.bind_user(openid)?;
+                                    tracing::info!(bound, "QQ private target binding processed");
                                 }
                             }
                         }

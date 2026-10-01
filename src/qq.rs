@@ -21,12 +21,15 @@ pub fn bind_from_private_message(store: &Store, content: &str, user_openid: &str
 
 pub fn render_notification(issue: &IssueNotification) -> String {
     let base = format!(
-        "[Issue通知] {} #{}\n标题: {}\n作者: {}\n创建时间: {}\n链接: {}",
+        "[Issue通知] {} #{}\n标题: {}\n作者: {}\n时间: {}\n链接: {}",
         issue.repository,
         issue.number,
         issue.title,
         issue.author,
-        issue.created_at.to_rfc3339(),
+        issue
+            .created_at
+            .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+            .format("%Y/%-m/%-d %H:%M"),
         issue.url
     );
     base.chars().take(1800).collect()
@@ -63,7 +66,7 @@ impl MessageSink for QqHttpSender {
         let response = self
             .client
             .post(format!("{}/{}/messages", self.endpoint, user_openid))
-            .bearer_auth(&self.access_token)
+            .header("Authorization", format!("QQBot {}", self.access_token))
             .json(&serde_json::json!({"content": text}))
             .send()
             .await
@@ -85,7 +88,7 @@ impl MessageSink for QqHttpSender {
             let retry = self
                 .client
                 .post(format!("{}/{}/messages", self.endpoint, user_openid))
-                .bearer_auth(&self.access_token)
+                .header("Authorization", format!("QQBot {}", self.access_token))
                 .json(&serde_json::json!({"content": fallback}))
                 .send()
                 .await;

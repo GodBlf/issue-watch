@@ -9,35 +9,71 @@ use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    eprintln!("Loading local configuration");
+    dotenvy::from_filename(".env.local").ok();
     dotenvy::dotenv().ok();
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_ansi(false)
+        .init();
     let config_path = std::env::var("ISSUE_WATCH_CONFIG").unwrap_or_else(|_| "config.toml".into());
     let config = Config::load(&config_path)?;
+    eprintln!("Opening monitoring database");
     let store = Store::open(&config.file.database_path)?;
     for repository in &config.file.repositories {
         store.ensure_repository(repository, chrono::Utc::now())?;
     }
     let github = GithubClient::new(config.github_token.clone())?;
+    eprintln!("Connecting to QQ API");
+    info!("Requesting QQ access token");
     let access_token = match std::env::var("QQ_ACCESS_TOKEN") {
         Ok(token) => Some(token),
         Err(_) => match issue_watch::qq::fetch_access_token(
-            &reqwest::Client::new(),
+            &reqwest::Client::builder()
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(20))
+                .build()?,
             &config.qq_app_id,
             &config.qq_app_secret,
         )
         .await
         {
-            Ok(token) => Some(token),
+            Ok(token) => {
+                eprintln!("QQ access token acquired");
+                Some(token)
+            }
             Err(error) => {
+                eprintln!("QQ access token unavailable: {error:#}");
                 warn!(%error, "QQ access token unavailable; notifications remain queued");
                 None
             }
         },
     };
     let sender = access_token.clone().map(QqHttpSender::new);
+    eprintln!("Starting monitoring loop");
     if let Some(token) = access_token.clone() {
-        let gateway_url = std::env::var("QQ_GATEWAY_URL")
-            .unwrap_or_else(|_| "wss://api.sgroup.qq.com/websocket/".into());
+        let gateway_url = match std::env::var("QQ_GATEWAY_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                info!("Requesting QQ gateway URL");
+                let response = reqwest::Client::builder()
+                    .no_proxy()
+                    .timeout(std::time::Duration::from_secs(20))
+                    .build()?
+                    .get("https://api.sgroup.qq.com/gateway")
+                    .header("Authorization", format!("QQBot {token}"))
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<serde_json::Value>()
+                    .await?;
+                response
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("QQ gateway URL missing"))?
+                    .to_owned()
+            }
+        };
         let database_path = config.file.database_path.clone();
         tokio::spawn(async move {
             loop {
