@@ -1,8 +1,6 @@
 use anyhow::Result;
 use issue_watch::{
-    github::{discover_repository, GithubClient},
-    qq::QqHttpSender,
-    queue::deliver_pending,
+    github::GithubClient, github_health::GithubHealth, qq::QqHttpSender, queue::deliver_pending,
     Config, Store,
 };
 use tracing::{info, warn};
@@ -27,6 +25,7 @@ async fn main() -> Result<()> {
             .chain(std::env::var("QQ_ACCESS_TOKEN").ok())
             .collect(),
     );
+    let github_health = GithubHealth::new(health.clone(), &config.file.repositories);
     let health_bind =
         std::env::var("ISSUE_WATCH_HEALTH_BIND").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let health_listener = tokio::net::TcpListener::bind(&health_bind).await?;
@@ -130,12 +129,13 @@ async fn main() -> Result<()> {
             issue_watch::reload::next_monitoring_event(&mut interval, &mut changes).await?
         {
             active = updated;
+            github_health.sync_repositories(&active.repositories);
             interval =
                 tokio::time::interval(std::time::Duration::from_secs(active.poll_interval_seconds));
             continue;
         }
         for repository in &active.repositories {
-            match discover_repository(&github, &store, repository, chrono::Utc::now()).await {
+            match github_health.poll(&github, &store, repository).await {
                 Ok(count) => info!(repository, discovered = count, "GitHub poll complete"),
                 Err(error) => warn!(repository, %error, "GitHub poll failed"),
             }

@@ -1,5 +1,6 @@
 pub mod config;
 pub mod github;
+pub mod github_health;
 pub mod model;
 pub mod qq;
 pub mod qq_gateway;
