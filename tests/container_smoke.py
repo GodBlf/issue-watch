@@ -1,5 +1,6 @@
 """Verify the built image through production Compose, without external network access."""
 import argparse
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -67,7 +68,7 @@ def main():
 
             run("stop")
             # A stopped deployment fixture with existing subscriptions and delivery progress.
-            with sqlite3.connect(database) as db:
+            with closing(sqlite3.connect(database)) as db, db:
                 db.execute("UPDATE monitored_repositories SET cursor='2020-01-01T00:00:00+00:00' WHERE name='owner/another'")
                 db.execute("INSERT INTO broadcast_subscriptions(user_openid) VALUES ('smoke-subscriber')")
                 subscription = db.execute("SELECT id FROM broadcast_subscriptions").fetchone()[0]
@@ -79,7 +80,7 @@ def main():
             assert "smoke-secret" not in json.dumps(status)
             assert "smoke-token" not in json.dumps(status)
             run("stop")
-            with sqlite3.connect(database) as db:
+            with closing(sqlite3.connect(database)) as db:
                 assert db.execute("SELECT user_openid FROM broadcast_subscriptions").fetchall() == [("smoke-subscriber",)]
                 assert db.execute("SELECT cursor FROM monitored_repositories WHERE name='owner/another'").fetchone() == ("2020-01-01T00:00:00+00:00",)
                 assert db.execute("SELECT number,state FROM notification_deliveries ORDER BY number").fetchall() == [(1, "sent"), (2, "retry")]
