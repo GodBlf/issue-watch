@@ -22,7 +22,7 @@ impl ConfigReloader {
     }
 
     pub fn check(&mut self, store: &Store, now: DateTime<Utc>) -> Result<bool> {
-        let candidate = FileConfig::load(&self.path)?;
+        let mut candidate = FileConfig::load(&self.path)?;
         anyhow::ensure!(
             candidate.database_path == self.active.database_path,
             "database_path changes require a restart; keeping previous configuration"
@@ -30,11 +30,27 @@ impl ConfigReloader {
         if candidate == self.active {
             return Ok(false);
         }
-        for repository in &candidate.repositories {
-            store.ensure_repository(repository, now)?;
+        candidate.repositories = store.ensure_repositories(&candidate.repositories, now)?;
+        if candidate == self.active {
+            return Ok(false);
         }
         self.active = candidate;
         Ok(true)
+    }
+}
+
+/// Apply pending updates before starting another poll when both are ready.
+pub async fn next_monitoring_event(
+    interval: &mut tokio::time::Interval,
+    changes: &mut tokio::sync::watch::Receiver<FileConfig>,
+) -> Result<Option<FileConfig>> {
+    tokio::select! {
+        biased;
+        result = changes.changed() => {
+            result?;
+            Ok(Some(changes.borrow_and_update().clone()))
+        }
+        _ = interval.tick() => Ok(None),
     }
 }
 

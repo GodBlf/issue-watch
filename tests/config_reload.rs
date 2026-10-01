@@ -106,3 +106,84 @@ async fn watcher_publishes_changes_without_waiting_for_github_poll() {
     assert_eq!(rx.borrow().repositories, ["owner/new"]);
     task.abort();
 }
+
+#[test]
+fn casing_only_edit_keeps_repository_identity_cursor_and_notification() {
+    let (dir, mut reload, store) = fixture();
+    let now = Utc::now();
+    store.set_cursor("owner/old", now).unwrap();
+    store
+        .insert_notification(&issue_watch::IssueNotification {
+            repository: "owner/old".into(),
+            number: 7,
+            title: "bug".into(),
+            author: "user".into(),
+            created_at: now,
+            url: "https://github.com/owner/old/issues/7".into(),
+        })
+        .unwrap();
+    fs::write(
+        dir.path().join("config.toml"),
+        "repositories = ['OWNER/OLD']",
+    )
+    .unwrap();
+    assert!(!reload.check(&store, now).unwrap());
+    assert_eq!(reload.active().repositories, ["owner/old"]);
+    assert_eq!(store.get_cursor("owner/old").unwrap(), Some(now));
+    assert_eq!(
+        store.pending_notifications(now).unwrap()[0].repository,
+        "owner/old"
+    );
+}
+
+#[test]
+fn rejected_database_write_rolls_back_all_new_baselines() {
+    let (dir, mut reload, store) = fixture();
+    let db = rusqlite::Connection::open(dir.path().join("state.sqlite")).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_b BEFORE INSERT ON monitored_repositories WHEN NEW.name = 'owner/b' BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;").unwrap();
+    fs::write(
+        dir.path().join("config.toml"),
+        "repositories = ['owner/a', 'owner/b']",
+    )
+    .unwrap();
+    let earlier = Utc.with_ymd_and_hms(2026, 10, 1, 8, 0, 0).unwrap();
+    assert!(reload.check(&store, earlier).is_err());
+    assert_eq!(reload.active().repositories, ["owner/old"]);
+    db.execute_batch("DROP TRIGGER reject_b").unwrap();
+    let accepted = earlier + chrono::Duration::hours(1);
+    assert!(reload.check(&store, accepted).unwrap());
+    assert_eq!(
+        store
+            .ensure_repository("owner/a", accepted)
+            .unwrap()
+            .baseline,
+        Some(accepted)
+    );
+    assert_eq!(
+        store
+            .ensure_repository("owner/b", accepted)
+            .unwrap()
+            .baseline,
+        Some(accepted)
+    );
+}
+
+#[tokio::test]
+async fn pending_configuration_wins_over_due_poll_timer() {
+    let (_dir, reload, _store) = fixture();
+    let (tx, mut rx) = tokio::sync::watch::channel(reload.active().clone());
+    let mut updated = reload.active().clone();
+    updated.repositories = vec!["owner/new".into()];
+    tx.send(updated.clone()).unwrap();
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+    let event = issue_watch::reload::next_monitoring_event(&mut interval, &mut rx)
+        .await
+        .unwrap();
+    assert_eq!(event, Some(updated));
+    assert_eq!(
+        issue_watch::reload::next_monitoring_event(&mut interval, &mut rx)
+            .await
+            .unwrap(),
+        None
+    );
+}

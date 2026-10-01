@@ -104,14 +104,13 @@ async fn main() -> Result<()> {
         config.file.poll_interval_seconds,
     ));
     loop {
-        tokio::select! {
-            _ = interval.tick() => {},
-            result = changes.changed() => {
-                result?;
-                active = changes.borrow_and_update().clone();
-                interval = tokio::time::interval(std::time::Duration::from_secs(active.poll_interval_seconds));
-                continue;
-            }
+        if let Some(updated) =
+            issue_watch::reload::next_monitoring_event(&mut interval, &mut changes).await?
+        {
+            active = updated;
+            interval =
+                tokio::time::interval(std::time::Duration::from_secs(active.poll_interval_seconds));
+            continue;
         }
         for repository in &active.repositories {
             match discover_repository(&github, &store, repository, chrono::Utc::now()).await {

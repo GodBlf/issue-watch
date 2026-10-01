@@ -122,7 +122,7 @@ pub async fn discover_repository<S: IssueSource>(
                 continue;
             }
             let notification = IssueNotification {
-                repository: repository.into(),
+                repository: repo.name.clone(),
                 number: item.number,
                 title: item.title,
                 author: item.author,
@@ -136,7 +136,7 @@ pub async fn discover_repository<S: IssueSource>(
         page += 1;
     }
     if let Some(cursor) = newest {
-        store.set_cursor(repository, cursor)?;
+        store.set_cursor(&repo.name, cursor)?;
     }
     Ok(inserted)
 }
