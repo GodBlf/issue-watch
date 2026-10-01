@@ -1,0 +1,7 @@
+**
+!Dockerfile
+!Cargo.toml
+!Cargo.lock
+!config.example.toml
+!src
+!src/**
