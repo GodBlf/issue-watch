@@ -1,0 +1,15 @@
+services:
+  issue-watch:
+    image: ${ISSUE_WATCH_IMAGE:?immutable image reference required}
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file:
+      - ${ISSUE_WATCH_ROOT:-/home/godblf/issue-watch}/.env.local
+    environment:
+      ISSUE_WATCH_CONFIG: /app/config/config.toml
+      ISSUE_WATCH_HEALTH_BIND: 0.0.0.0:8080
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - ${ISSUE_WATCH_ROOT:-/home/godblf/issue-watch}/config:/app/config:ro
+      - ${ISSUE_WATCH_ROOT:-/home/godblf/issue-watch}/data:/app/data

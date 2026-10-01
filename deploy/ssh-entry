@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+exec sudo -n /usr/bin/python3 -I /usr/local/lib/issue-watch/deploy.py -- "${SSH_ORIGINAL_COMMAND:-}"

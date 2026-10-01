@@ -30,6 +30,8 @@ Docker 建议挂载配置所在的目录，并将 `ISSUE_WATCH_CONFIG` 指向该
 
 ## Docker
 
+生产环境的 GitHub Actions 镜像发布、首次迁移和恢复步骤见 [自动构建与部署](docs/deployment.md)。生产部署保留宿主机回环健康端口 8081，本地 Compose 的默认端口仍为 8080。
+
 复制配置示例并填写仓库，然后通过环境变量提供凭据：
 
 ```powershell
