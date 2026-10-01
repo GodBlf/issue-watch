@@ -10,6 +10,26 @@ use issue_watch::{
 
 struct Empty;
 struct Failing;
+
+#[tokio::test]
+async fn canonicalized_repository_casing_keeps_observations_live_after_reload() {
+    let health = Health::new(vec![]);
+    let monitor = GithubHealth::new(health.clone(), &["Owner/Repository".into()]);
+    let store = Store::open_in_memory().unwrap();
+    monitor
+        .poll_with_clock(&Empty, &store, "Owner/Repository", || at(1))
+        .await
+        .unwrap();
+    monitor.sync_repositories(&["owner/repository".into()]);
+    assert!(monitor
+        .poll_with_clock(&Failing, &store, "owner/repository", || at(2))
+        .await
+        .is_err());
+    let observation = row(&health, "Owner/Repository");
+    assert_eq!(observation["status"], "warning");
+    assert_eq!(observation["last_attempt_at"], "2026-10-01T02:00:00Z");
+    assert_eq!(observation["last_success_at"], "2026-10-01T01:00:00Z");
+}
 #[async_trait]
 impl IssueSource for Failing {
     async fn list_issues(

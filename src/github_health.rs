@@ -110,7 +110,10 @@ impl GithubHealth {
         self.progress(true, repository, "checking_repository", attempt);
         {
             let mut repositories = self.repositories.lock().unwrap();
-            if let Some(row) = repositories.iter_mut().find(|r| r.repository == repository) {
+            if let Some(row) = repositories
+                .iter_mut()
+                .find(|r| r.repository.eq_ignore_ascii_case(repository))
+            {
                 row.last_attempt_at = Some(attempt);
             }
         }
@@ -123,7 +126,10 @@ impl GithubHealth {
         let result = discover_repository(&observed, store, repository, attempt).await;
         {
             let mut repositories = self.repositories.lock().unwrap();
-            if let Some(row) = repositories.iter_mut().find(|r| r.repository == repository) {
+            if let Some(row) = repositories
+                .iter_mut()
+                .find(|r| r.repository.eq_ignore_ascii_case(repository))
+            {
                 if result.is_ok() {
                     row.status = HealthStatus::Normal;
                     row.last_success_at = Some(clock());
