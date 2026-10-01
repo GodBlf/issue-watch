@@ -29,13 +29,22 @@ pub trait IssueSource: Send + Sync {
 pub struct GithubClient {
     client: Client,
     token: Option<String>,
+    api_base: url::Url,
 }
 
 impl GithubClient {
     pub fn new(token: Option<String>) -> Result<Self> {
+        Self::with_api_base(token, "https://api.github.com/")
+    }
+    /// Connect to a GitHub-compatible external API endpoint.
+    pub fn with_api_base(token: Option<String>, api_base: &str) -> Result<Self> {
         Ok(Self {
-            client: Client::builder().user_agent("issue-watch/0.1").build()?,
+            client: Client::builder()
+                .user_agent("issue-watch/0.1")
+                .timeout(std::time::Duration::from_secs(30))
+                .build()?,
             token,
+            api_base: url::Url::parse(api_base).context("parse GitHub API base URL")?,
         })
     }
 }
@@ -62,7 +71,7 @@ impl IssueSource for GithubClient {
         since: Option<DateTime<Utc>>,
         page: u32,
     ) -> Result<Vec<GithubIssue>> {
-        let url = format!("https://api.github.com/repos/{repository}/issues");
+        let url = self.api_base.join(&format!("repos/{repository}/issues"))?;
         let mut request = self.client.get(url).query(&[
             ("state", "all"),
             ("sort", "created"),
