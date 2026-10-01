@@ -169,17 +169,31 @@ class Deployment:
             if self.old_container and self.old_container["running"]:
                 command("docker", "start", self.old_container["id"])
             return
-        write_json(self.root / "deploy/recovery-required.json", {
-            "image": self.image, "revision": self.revision, "backup": str(self.backup),
-        })
-        container = self.container()
+        errors = []
+
+        def attempt(operation):
+            try:
+                return operation()
+            except (RuntimeError, OSError, ValueError, IndexError, subprocess.TimeoutExpired) as error:
+                errors.append(type(error).__name__)
+                return None
+
+        # Cleanup must not depend on being able to write metadata or logs (e.g. ENOSPC).
+        container = attempt(self.container)
         if container:
-            command("docker", "update", "--restart=no", container["id"])
-            command("docker", "stop", "--time", "30", container["id"])
-            logs = command("docker", "logs", "--tail", "200", container["id"], check=False)
-            if self.backup:
-                (self.backup / "failed-container.log").write_text(logs.stdout + logs.stderr)
+            attempt(lambda: command("docker", "update", "--restart=no", container["id"]))
+            attempt(lambda: command("docker", "stop", "--time", "30", container["id"]))
+            logs = attempt(lambda: command("docker", "logs", "--tail", "200", container["id"], check=False))
+            if self.backup and logs:
+                attempt(lambda: (self.backup / "failed-container.log").write_text(logs.stdout + logs.stderr))
+        else:
+            attempt(lambda: self.compose("stop", "--timeout", "30"))
+        attempt(lambda: write_json(self.root / "deploy/recovery-required.json", {
+            "image": self.image, "revision": self.revision, "backup": str(self.backup),
+        }))
         print(f"manual recovery required; backup: {self.backup}", file=sys.stderr)
+        if errors:
+            raise RuntimeError("recovery had errors: " + ", ".join(errors))
 
 
 def main():

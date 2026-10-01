@@ -48,13 +48,18 @@ elif tool == "docker":
         output = json.dumps([{"Config": {"Image": state["image"]}, "State": {"Running": state["container"]}}])
     elif args[0] == "stop": state["container"] = False
     elif args[0] == "start": state["container"] = True
-    elif args[0] == "update": state["restart"] = "no"
+    elif args[0] == "update":
+        if state.get("restart_update_fail"): code = 1
+        else: state["restart"] = "no"
     elif args[0] == "logs": output = "test container log"
     elif args[0] == "compose":
         if "up" in args:
             state["container"] = True
             state["image"] = os.environ["ISSUE_WATCH_IMAGE"]
             state["restart"] = "unless-stopped"
+            if state.get("metadata_fail"):
+                (path.parent / "deploy/current.tmp").mkdir()
+                (path.parent / "deploy/recovery-required.tmp").mkdir()
             if state.get("mutate"):
                 db = sqlite3.connect(path.parent / "data/issue-watch.sqlite3")
                 db.execute("INSERT INTO records VALUES ('after-start')")
@@ -163,6 +168,30 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(retry.returncode, 1)
         self.assertIn("manual recovery required", retry.stderr)
         self.assertFalse(self.state()["container"])
+
+    def test_metadata_failure_after_launch_still_stops_unverified_container(self):
+        self.write_state(metadata_fail=True)
+        result = self.deploy()
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(self.state()["container"])
+        self.assertEqual(self.state()["restart"], "no")
+
+    def test_restart_policy_error_does_not_prevent_stopping_container(self):
+        self.write_state(health_fail=True, restart_update_fail=True)
+        result = self.deploy()
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(self.state()["container"])
+
+    def test_backup_includes_committed_wal_records(self):
+        with sqlite3.connect(self.root / "data/issue-watch.sqlite3") as db:
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("INSERT INTO records VALUES ('wal-record')")
+            db.commit()
+            result = self.deploy()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            backup = next((self.root / "backups").glob("*/issue-watch.sqlite3"))
+            with sqlite3.connect(backup) as copy:
+                self.assertEqual(copy.execute("SELECT value FROM records").fetchall(), [("before-update",), ("wal-record",)])
 
     def test_health_failure_stops_new_container_without_rolling_back(self):
         self.write_state(health_fail=True)

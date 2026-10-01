@@ -74,6 +74,7 @@ node --test tests/health_dashboard_browser.cjs
 bash -n deploy/install.sh
 sh -n deploy/ssh-entry
 docker build --platform linux/amd64 -t issue-watch:check .
+python3 tests/container_smoke.py issue-watch:check
 ```
 
-部署入口测试在 Linux 运行，用临时 SQLite 和外部命令替身模拟服务管理、Docker、主分支查询和健康 HTTP 请求。镜像构建和实际容器启动另行验证；测试不会连接 QQ 用户或生产数据库。
+部署入口测试在 Linux 运行，用临时 SQLite 和外部命令替身模拟服务管理、Docker、主分支查询和健康 HTTP 请求。镜像测试实际启动生产 Compose，用隔离网络和测试数据验证配置热加载及广播订阅、监控进度和通知投递记录在重启后保留；通过后才发布镜像。测试不会连接 QQ 用户或生产数据库。

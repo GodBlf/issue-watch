@@ -1,0 +1,2 @@
+deploy/*.sh text eol=lf
+deploy/ssh-entry text eol=lf
