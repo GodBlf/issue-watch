@@ -3,6 +3,7 @@ use issue_watch::{
     github::GithubClient, github_health::GithubHealth, qq::RefreshingQqHttpSender,
     queue::deliver_pending_observed, Config, Store,
 };
+use std::sync::Arc;
 use tracing::{info, warn};
 
 #[tokio::main]
@@ -79,17 +80,21 @@ async fn main() -> Result<()> {
         health.add_secret(token.clone());
     }
     let sender = access_token.clone().map(|token| {
-        RefreshingQqHttpSender::new(
+        Arc::new(RefreshingQqHttpSender::new(
             token,
             config.qq_app_id.clone(),
             config.qq_app_secret.clone(),
-        )
+        ))
     });
     eprintln!("Starting monitoring loop");
     if let Some(token) = access_token.clone() {
         let configured_gateway = std::env::var("QQ_GATEWAY_URL").ok();
         let database_path = config.file.database_path.clone();
         let gateway_health = qq_health.clone();
+        let gateway_sender = sender
+            .as_ref()
+            .expect("sender exists with access token")
+            .clone();
         let client = reqwest::Client::builder()
             .no_proxy()
             .timeout(std::time::Duration::from_secs(30))
@@ -102,13 +107,15 @@ async fn main() -> Result<()> {
                 };
                 match gateway_url {
                     Ok(url) => {
-                        if let Err(error) = issue_watch::qq_gateway::run_gateway_observed(
-                            &url,
-                            &token,
-                            &database_path,
-                            &gateway_health,
-                        )
-                        .await
+                        if let Err(error) =
+                            issue_watch::qq_gateway::run_gateway_with_sender_observed(
+                                &url,
+                                &token,
+                                &database_path,
+                                gateway_sender.clone(),
+                                &gateway_health,
+                            )
+                            .await
                         {
                             warn!(%error,"QQ gateway failed; reconnecting");
                         }
@@ -169,7 +176,8 @@ async fn main() -> Result<()> {
             qq_health.refresh_queue(&store)?;
         }
         if let Some(sender) = &sender {
-            if let Err(error) = deliver_pending_observed(&store, sender, &qq_health).await {
+            if let Err(error) = deliver_pending_observed(&store, sender.as_ref(), &qq_health).await
+            {
                 warn!(%error, "notification delivery failed");
             }
         } else {

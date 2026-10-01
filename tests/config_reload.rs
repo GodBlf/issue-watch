@@ -41,10 +41,7 @@ fn atomic_save_adds_repository_changes_interval_and_preserves_existing_progress(
         Some(now)
     );
     assert_eq!(store.get_cursor("owner/old").unwrap(), Some(now));
-    assert_eq!(
-        store.get_bound_user().unwrap().as_deref(),
-        Some("private-target")
-    );
+    assert_eq!(store.bound_users().unwrap(), ["private-target"]);
     assert!(!reload.check(&store, now).unwrap());
 }
 
@@ -131,7 +128,7 @@ fn casing_only_edit_keeps_repository_identity_cursor_and_notification() {
     assert_eq!(reload.active().repositories, ["owner/old"]);
     assert_eq!(store.get_cursor("owner/old").unwrap(), Some(now));
     assert_eq!(
-        store.pending_notifications(now).unwrap()[0].repository,
+        store.recorded_notifications().unwrap()[0].repository,
         "owner/old"
     );
 }
