@@ -6,6 +6,7 @@ use std::path::Path;
 
 pub struct Store {
     conn: Connection,
+    health: Option<crate::health::Health>,
 }
 
 impl Store {
@@ -14,20 +15,46 @@ impl Store {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path).context("open SQLite database")?;
-        let store = Self { conn };
+        let store = Self { conn, health: None };
         store.init()?;
         Ok(store)
     }
 
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let store = Self { conn };
+        let store = Self { conn, health: None };
         store.init()?;
         Ok(store)
     }
 
     fn init(&self) -> Result<()> {
         self.conn.execute_batch("CREATE TABLE IF NOT EXISTS monitored_repositories (name TEXT PRIMARY KEY, baseline TEXT, cursor TEXT); CREATE TABLE IF NOT EXISTS issue_notifications (repository TEXT NOT NULL, number INTEGER NOT NULL, title TEXT NOT NULL, author TEXT NOT NULL, created_at TEXT NOT NULL, url TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, last_error TEXT, PRIMARY KEY(repository, number)); CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")?;
+        // Old rows intentionally retain NULL timestamps; Issue creation is not enqueue/send time.
+        let mut columns = self
+            .conn
+            .prepare("PRAGMA table_info(issue_notifications)")?;
+        let names = columns
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for name in ["enqueued_at", "sent_at"] {
+            if !names.iter().any(|column| column == name) {
+                self.conn.execute(
+                    &format!("ALTER TABLE issue_notifications ADD COLUMN {name} TEXT"),
+                    [],
+                )?;
+            }
+        }
+        Ok(())
+    }
+    pub fn with_health(mut self, health: crate::health::Health) -> Result<Self> {
+        self.health = Some(health);
+        self.observe_queue()?;
+        Ok(self)
+    }
+    fn observe_queue(&self) -> Result<()> {
+        if let Some(health) = &self.health {
+            crate::qq_health::QqHealth(health.clone()).refresh_queue(self)?;
+        }
         Ok(())
     }
 
@@ -91,7 +118,8 @@ impl Store {
     }
 
     pub fn insert_notification(&self, issue: &IssueNotification) -> Result<bool> {
-        let changed = self.conn.execute("INSERT OR IGNORE INTO issue_notifications(repository, number, title, author, created_at, url, state) VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'pending')", params![issue.repository, issue.number, issue.title, issue.author, issue.created_at.to_rfc3339(), issue.url])?;
+        let changed = self.conn.execute("INSERT OR IGNORE INTO issue_notifications(repository, number, title, author, created_at, url, state, enqueued_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'pending',?7)", params![issue.repository, issue.number, issue.title, issue.author, issue.created_at.to_rfc3339(), issue.url,Utc::now().to_rfc3339()])?;
+        self.observe_queue()?;
         Ok(changed == 1)
     }
 
@@ -111,7 +139,8 @@ impl Store {
     }
 
     pub fn mark_sent(&self, issue: &IssueNotification) -> Result<()> {
-        self.conn.execute("UPDATE issue_notifications SET state='sent', next_attempt_at=NULL, last_error=NULL WHERE repository=?1 AND number=?2", params![issue.repository, issue.number])?;
+        self.conn.execute("UPDATE issue_notifications SET state='sent', next_attempt_at=NULL, last_error=NULL,sent_at=?3 WHERE repository=?1 AND number=?2", params![issue.repository, issue.number,Utc::now().to_rfc3339()])?;
+        self.observe_queue()?;
         Ok(())
     }
     pub fn mark_retry(
@@ -121,10 +150,12 @@ impl Store {
         error: &str,
     ) -> Result<()> {
         self.conn.execute("UPDATE issue_notifications SET state='retry', attempts=attempts+1, next_attempt_at=?3, last_error=?4 WHERE repository=?1 AND number=?2", params![issue.repository, issue.number, next.to_rfc3339(), error])?;
+        self.observe_queue()?;
         Ok(())
     }
     pub fn mark_permanent_failure(&self, issue: &IssueNotification, error: &str) -> Result<()> {
         self.conn.execute("UPDATE issue_notifications SET state='permanent_failure', attempts=attempts+1, last_error=?3 WHERE repository=?1 AND number=?2", params![issue.repository, issue.number, error])?;
+        self.observe_queue()?;
         Ok(())
     }
     pub fn get_bound_user(&self) -> Result<Option<String>> {
@@ -137,11 +168,26 @@ impl Store {
             )
             .optional()?)
     }
+    pub fn notification_summary(&self) -> Result<serde_json::Value> {
+        let count = |state: &str| -> Result<u64> {
+            Ok(self.conn.query_row(
+                "SELECT COUNT(*) FROM issue_notifications WHERE state=?1",
+                [state],
+                |row| row.get(0),
+            )?)
+        };
+        let mut statement=self.conn.prepare("SELECT repository,number,state,last_error,enqueued_at,sent_at FROM issue_notifications WHERE state IN ('retry','permanent_failure') ORDER BY repository,number")?;
+        let failures=statement.query_map([],|row| Ok(serde_json::json!({"repository":row.get::<_,String>(0)?,"number":row.get::<_,u64>(1)?,"state":row.get::<_,String>(2)?,"error":row.get::<_,Option<String>>(3)?,"enqueued_at":row.get::<_,Option<String>>(4)?,"sent_at":row.get::<_,Option<String>>(5)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(
+            serde_json::json!({"pending":count("pending")?, "retrying":count("retry")?, "permanent_failed":count("permanent_failure")?,"failures":failures}),
+        )
+    }
     pub fn bind_user(&self, openid: &str) -> Result<bool> {
         let changed = self.conn.execute(
             "INSERT OR IGNORE INTO settings(key,value) VALUES('qq_user_openid', ?1)",
             [openid],
         )?;
+        self.observe_queue()?;
         Ok(changed == 1)
     }
 }

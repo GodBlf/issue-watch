@@ -7,6 +7,23 @@ use chrono::{Duration, Utc};
 use tokio::time::{sleep, Duration as TokioDuration};
 
 pub async fn deliver_pending<S: MessageSink>(store: &Store, sink: &S) -> Result<usize> {
+    deliver(store, sink, None).await
+}
+pub async fn deliver_pending_observed<S: MessageSink>(
+    store: &Store,
+    sink: &S,
+    health: &crate::qq_health::QqHealth,
+) -> Result<usize> {
+    deliver(store, sink, Some(health)).await
+}
+async fn deliver<S: MessageSink>(
+    store: &Store,
+    sink: &S,
+    health: Option<&crate::qq_health::QqHealth>,
+) -> Result<usize> {
+    if let Some(h) = health {
+        h.refresh_queue(store)?;
+    }
     let target = match store.get_bound_user()? {
         Some(value) => value,
         None => return Ok(0),
@@ -17,18 +34,45 @@ pub async fn deliver_pending<S: MessageSink>(store: &Store, sink: &S) -> Result<
         if index > 0 {
             sleep(TokioDuration::from_secs(3)).await;
         }
+        if let Some(h) = health {
+            h.progress(true, "sending");
+        }
         match sink.send(&target, &render_notification(&issue)).await {
             Ok(()) => {
                 store.mark_sent(&issue)?;
                 delivered += 1;
+                if let Some(h) = health {
+                    h.sent("sent", None);
+                    h.authentication(true, None);
+                }
             }
             Err(SendError::Retryable(error)) => {
                 store.mark_retry(&issue, Utc::now() + Duration::seconds(30), &error)?;
+                if let Some(h) = health {
+                    h.sent("retrying", Some(&error));
+                }
             }
             Err(SendError::Permanent(error)) => {
                 store.mark_permanent_failure(&issue, &error)?;
+                if let Some(h) = health {
+                    h.sent("permanent_failed", Some(&error));
+                }
+            }
+            Err(SendError::Authentication(error)) => {
+                store.mark_permanent_failure(&issue, &error)?;
+                if let Some(h) = health {
+                    h.sent("permanent_failed", Some(&error));
+                    h.authentication(false, Some(&error));
+                }
             }
         }
+        if let Some(h) = health {
+            h.progress(true, "recorded");
+            h.refresh_queue(store)?;
+        }
+    }
+    if let Some(h) = health {
+        h.progress(false, "idle");
     }
     Ok(delivered)
 }
