@@ -1,7 +1,7 @@
 use anyhow::Result;
 use issue_watch::{
-    github::GithubClient, github_health::GithubHealth, qq::QqHttpSender, queue::deliver_pending,
-    Config, Store,
+    github::GithubClient, github_health::GithubHealth, qq::QqHttpSender,
+    queue::deliver_pending_observed, Config, Store,
 };
 use tracing::{info, warn};
 
@@ -38,7 +38,9 @@ async fn main() -> Result<()> {
         }
     });
     eprintln!("Opening monitoring database");
-    let store = Store::open(&config.file.database_path)?;
+    let store = Store::open(&config.file.database_path)?.with_health(health.clone())?;
+    let qq_health = issue_watch::qq_health::QqHealth::new(health.clone());
+    qq_health.refresh_queue(&store)?;
     for repository in &config.file.repositories {
         store.ensure_repository(repository, chrono::Utc::now())?;
     }
@@ -50,7 +52,7 @@ async fn main() -> Result<()> {
         Err(_) => match issue_watch::qq::fetch_access_token(
             &reqwest::Client::builder()
                 .no_proxy()
-                .timeout(std::time::Duration::from_secs(20))
+                .timeout(std::time::Duration::from_secs(30))
                 .build()?,
             &config.qq_app_id,
             &config.qq_app_secret,
@@ -59,9 +61,14 @@ async fn main() -> Result<()> {
         {
             Ok(token) => {
                 eprintln!("QQ access token acquired");
+                qq_health.authentication(true, None);
                 Some(token)
             }
             Err(error) => {
+                qq_health.authentication(
+                    false,
+                    Some(&format!("QQ credential acquisition failed: {error:#}")),
+                );
                 eprintln!("QQ access token unavailable: {error:#}");
                 warn!(%error, "QQ access token unavailable; notifications remain queued");
                 None
@@ -74,36 +81,48 @@ async fn main() -> Result<()> {
     let sender = access_token.clone().map(QqHttpSender::new);
     eprintln!("Starting monitoring loop");
     if let Some(token) = access_token.clone() {
-        let gateway_url = match std::env::var("QQ_GATEWAY_URL") {
-            Ok(url) => url,
-            Err(_) => {
-                info!("Requesting QQ gateway URL");
-                let response = reqwest::Client::builder()
-                    .no_proxy()
-                    .timeout(std::time::Duration::from_secs(20))
-                    .build()?
-                    .get("https://api.sgroup.qq.com/gateway")
-                    .header("Authorization", format!("QQBot {token}"))
-                    .send()
-                    .await?
-                    .error_for_status()?
-                    .json::<serde_json::Value>()
-                    .await?;
-                response
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("QQ gateway URL missing"))?
-                    .to_owned()
-            }
-        };
+        let configured_gateway = std::env::var("QQ_GATEWAY_URL").ok();
         let database_path = config.file.database_path.clone();
+        let gateway_health = qq_health.clone();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
         tokio::spawn(async move {
             loop {
-                match issue_watch::qq_gateway::run_gateway(&gateway_url, &token, &database_path)
-                    .await
-                {
-                    Ok(()) => warn!("QQ gateway disconnected; reconnecting"),
-                    Err(error) => warn!(%error, "QQ gateway failed; reconnecting"),
+                let gateway_url = match &configured_gateway {
+                    Some(url) => Ok(url.clone()),
+                    None => issue_watch::qq::fetch_gateway_url(&client, &token).await,
+                };
+                match gateway_url {
+                    Ok(url) => {
+                        if let Err(error) = issue_watch::qq_gateway::run_gateway_observed(
+                            &url,
+                            &token,
+                            &database_path,
+                            &gateway_health,
+                        )
+                        .await
+                        {
+                            warn!(%error,"QQ gateway failed; reconnecting");
+                        }
+                    }
+                    Err(error) => {
+                        gateway_health.gateway(false, Some(&error.to_string()));
+                        if error
+                            .chain()
+                            .filter_map(|error| error.downcast_ref::<reqwest::Error>())
+                            .any(|error| {
+                                error
+                                    .status()
+                                    .is_some_and(|status| matches!(status.as_u16(), 401 | 403))
+                            })
+                        {
+                            gateway_health
+                                .authentication(false, Some("QQ gateway authentication rejected"));
+                        }
+                        warn!(%error,"QQ gateway URL unavailable; reconnecting");
+                    }
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
@@ -141,9 +160,10 @@ async fn main() -> Result<()> {
                 Ok(count) => info!(repository, discovered = count, "GitHub poll complete"),
                 Err(error) => warn!(repository, %error, "GitHub poll failed"),
             }
+            qq_health.refresh_queue(&store)?;
         }
         if let Some(sender) = &sender {
-            if let Err(error) = deliver_pending(&store, sender).await {
+            if let Err(error) = deliver_pending_observed(&store, sender, &qq_health).await {
                 warn!(%error, "notification delivery failed");
             }
         } else {

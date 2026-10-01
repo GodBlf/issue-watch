@@ -6,6 +6,8 @@ use serde::Deserialize;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SendError {
+    #[error("QQ authentication failed: {0}")]
+    Authentication(String),
     #[error("retryable QQ error: {0}")]
     Retryable(String),
     #[error("permanent QQ error: {0}")]
@@ -47,10 +49,16 @@ pub struct QqHttpSender {
 }
 impl QqHttpSender {
     pub fn new(access_token: String) -> Self {
+        Self::with_endpoint(access_token, "https://api.sgroup.qq.com/v2/users".into())
+    }
+    pub fn with_endpoint(access_token: String, endpoint: String) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("QQ HTTP client"),
             access_token,
-            endpoint: "https://api.sgroup.qq.com/v2/users".into(),
+            endpoint,
         }
     }
 }
@@ -71,14 +79,21 @@ impl MessageSink for QqHttpSender {
             .send()
             .await
             .map_err(|e| SendError::Retryable(e.to_string()))?;
-        if response.status().is_success() {
-            return Ok(());
-        }
         let status = response.status();
-        let body = response.json::<ErrorBody>().await.unwrap_or(ErrorBody {
+        if matches!(status.as_u16(), 401 | 403) {
+            return Err(SendError::Authentication(format!("HTTP {status}")));
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| SendError::Retryable(e.to_string()))?;
+        let body = serde_json::from_slice::<ErrorBody>(&bytes).unwrap_or(ErrorBody {
             code: None,
             message: None,
         });
+        if status.is_success() && body.code.is_none_or(|code| code == 0) {
+            return Ok(());
+        }
         if body.code == Some(40054010) {
             let fallback = text
                 .lines()
@@ -91,13 +106,32 @@ impl MessageSink for QqHttpSender {
                 .header("Authorization", format!("QQBot {}", self.access_token))
                 .json(&serde_json::json!({"content": fallback}))
                 .send()
-                .await;
-            if retry
-                .map(|response| response.status().is_success())
-                .unwrap_or(false)
+                .await
+                .map_err(|e| SendError::Retryable(e.to_string()))?;
+            let retry_status = retry.status();
+            let retry_bytes = retry
+                .bytes()
+                .await
+                .map_err(|e| SendError::Retryable(e.to_string()))?;
+            let retry_body = serde_json::from_slice::<ErrorBody>(&retry_bytes).ok();
+            if retry_status.is_success()
+                && retry_body
+                    .as_ref()
+                    .and_then(|body| body.code)
+                    .is_none_or(|code| code == 0)
             {
                 return Ok(());
             }
+            let message = retry_body
+                .and_then(|body| body.message)
+                .unwrap_or_else(|| format!("HTTP {retry_status}"));
+            return Err(if matches!(retry_status.as_u16(), 401 | 403) {
+                SendError::Authentication(message)
+            } else if retry_status.as_u16() == 429 || retry_status.is_server_error() {
+                SendError::Retryable(message)
+            } else {
+                SendError::Permanent(message)
+            });
         }
         let message = body.message.unwrap_or_else(|| format!("HTTP {status}"));
         if status.as_u16() == 429 || status.is_server_error() {
@@ -111,6 +145,7 @@ impl MessageSink for QqHttpSender {
 pub async fn fetch_access_token(client: &Client, app_id: &str, app_secret: &str) -> Result<String> {
     let body = client
         .post("https://bots.qq.com/app/getAppAccessToken")
+        .timeout(std::time::Duration::from_secs(30))
         .json(&serde_json::json!({"appId": app_id, "clientSecret": app_secret}))
         .send()
         .await
@@ -122,6 +157,22 @@ pub async fn fetch_access_token(client: &Client, app_id: &str, app_secret: &str)
         .and_then(|v| v.as_str())
         .map(ToOwned::to_owned)
         .context("QQ access token missing")
+}
+
+pub async fn fetch_gateway_url(client: &Client, access_token: &str) -> Result<String> {
+    let body = client
+        .get("https://api.sgroup.qq.com/gateway")
+        .timeout(std::time::Duration::from_secs(30))
+        .header("Authorization", format!("QQBot {access_token}"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    body.get("url")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned)
+        .context("QQ gateway URL missing")
 }
 
 #[cfg(test)]
