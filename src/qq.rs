@@ -16,7 +16,7 @@ pub fn bind_from_private_message(store: &Store, content: &str, user_openid: &str
     if content.trim() != "/bind" {
         return Ok(false);
     }
-    Ok(store.bind_user(user_openid)?)
+    store.bind_user(user_openid)
 }
 
 pub fn render_notification(issue: &IssueNotification) -> String {

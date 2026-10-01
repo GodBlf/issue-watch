@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::{env, fs, path::Path};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct FileConfig {
     #[serde(default = "default_poll_interval")]
     pub poll_interval_seconds: u64,
@@ -28,11 +29,7 @@ pub struct Config {
 
 impl Config {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        let content =
-            fs::read_to_string(path).with_context(|| format!("read config {}", path.display()))?;
-        let file: FileConfig = toml::from_str(&content).context("parse TOML config")?;
-        validate_repositories(&file.repositories)?;
+        let file = FileConfig::load(path)?;
         let qq_app_id = env::var("QQ_APP_ID")
             .or_else(|_| env::var("QQ_BOT_APP_ID"))
             .context("QQ_APP_ID or QQ_BOT_APP_ID is required")?;
@@ -48,6 +45,27 @@ impl Config {
     }
 }
 
+impl FileConfig {
+    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        let content = fs::read_to_string(path.as_ref()).context("read TOML config")?;
+        let file: Self = toml::from_str(&content).context("parse TOML config")?;
+        validate_repositories(&file.repositories)?;
+        anyhow::ensure!(
+            file.poll_interval_seconds > 0,
+            "poll interval must be greater than zero"
+        );
+        anyhow::ensure!(
+            file.poll_interval_seconds <= 86400,
+            "poll interval must not exceed 86400 seconds"
+        );
+        anyhow::ensure!(
+            !file.database_path.trim().is_empty(),
+            "database path must not be empty"
+        );
+        Ok(file)
+    }
+}
+
 fn validate_repositories(repositories: &[String]) -> Result<()> {
     if repositories.is_empty() {
         anyhow::bail!("at least one repository is required")
@@ -55,10 +73,19 @@ fn validate_repositories(repositories: &[String]) -> Result<()> {
     let mut seen = std::collections::HashSet::new();
     for repo in repositories {
         let parts: Vec<_> = repo.split('/').collect();
-        if parts.len() != 2 || parts.iter().any(|part| part.trim().is_empty()) {
+        if parts.len() != 2
+            || parts.iter().any(|part| {
+                part.is_empty()
+                    || !part
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+                    || *part == "."
+                    || *part == ".."
+            })
+        {
             anyhow::bail!("repository must use owner/name format: {repo}")
         }
-        if !seen.insert(repo) {
+        if !seen.insert(repo.to_ascii_lowercase()) {
             anyhow::bail!("duplicate repository: {repo}")
         }
     }

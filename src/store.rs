@@ -35,7 +35,7 @@ impl Store {
         let existing: Option<MonitoredRepository> = self
             .conn
             .query_row(
-                "SELECT name, baseline, cursor FROM monitored_repositories WHERE name = ?1",
+                "SELECT name, baseline, cursor FROM monitored_repositories WHERE name = ?1 COLLATE NOCASE",
                 [name],
                 |row| {
                     Ok(MonitoredRepository {
@@ -58,6 +58,17 @@ impl Store {
             baseline: Some(now),
             cursor: None,
         })
+    }
+
+    /// Commit all candidate repository baselines together or roll them all back.
+    pub fn ensure_repositories(&self, names: &[String], now: DateTime<Utc>) -> Result<Vec<String>> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let repositories = names
+            .iter()
+            .map(|name| self.ensure_repository(name, now).map(|repo| repo.name))
+            .collect::<Result<Vec<_>>>()?;
+        transaction.commit()?;
+        Ok(repositories)
     }
 
     pub fn set_cursor(&self, repository: &str, cursor: DateTime<Utc>) -> Result<()> {

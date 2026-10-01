@@ -92,12 +92,27 @@ async fn main() -> Result<()> {
         poll_interval_seconds = config.file.poll_interval_seconds,
         "issue-watch started"
     );
+    let mut active = config.file.clone();
+    let (updates, mut changes) = tokio::sync::watch::channel(active.clone());
+    let watcher_store = Store::open(&active.database_path)?;
+    tokio::spawn(issue_watch::reload::watch_config(
+        issue_watch::reload::ConfigReloader::new(&config_path, active.clone()),
+        watcher_store,
+        updates,
+    ));
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(
         config.file.poll_interval_seconds,
     ));
     loop {
-        interval.tick().await;
-        for repository in &config.file.repositories {
+        if let Some(updated) =
+            issue_watch::reload::next_monitoring_event(&mut interval, &mut changes).await?
+        {
+            active = updated;
+            interval =
+                tokio::time::interval(std::time::Duration::from_secs(active.poll_interval_seconds));
+            continue;
+        }
+        for repository in &active.repositories {
             match discover_repository(&github, &store, repository, chrono::Utc::now()).await {
                 Ok(count) => info!(repository, discovered = count, "GitHub poll complete"),
                 Err(error) => warn!(repository, %error, "GitHub poll failed"),

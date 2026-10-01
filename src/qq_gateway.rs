@@ -25,7 +25,7 @@ pub async fn run_gateway(gateway_url: &str, access_token: &str, database_path: &
     loop {
         let message = tokio::select! {
             _ = heartbeat.tick() => {
-                socket.send(Message::Text(serde_json::json!({"op": 1, "d": sequence}).to_string().into())).await?;
+                socket.send(Message::Text(serde_json::json!({"op": 1, "d": sequence}).to_string())).await?;
                 continue;
             }
             message = socket.next() => match message { Some(message) => message?, None => break }
@@ -50,9 +50,7 @@ pub async fn run_gateway(gateway_url: &str, access_token: &str, database_path: &
                         );
                     }
                     let identify = serde_json::json!({"op": 2, "d": {"token": format!("QQBot {access_token}"), "intents": (1u64 << 25), "shard": [0, 1], "properties": {"$os": "issue-watch", "$browser": "issue-watch", "$device": "issue-watch"}}});
-                    socket
-                        .send(Message::Text(identify.to_string().into()))
-                        .await?;
+                    socket.send(Message::Text(identify.to_string())).await?;
                 }
                 0 => {
                     if event.t.as_deref() == Some("READY") {
