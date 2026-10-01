@@ -39,4 +39,3 @@ test('dashboard preserves stale data on disconnect and recovers automatically', 
   assert.equal(element('updated').textContent, '2026-10-01T01:00:20Z');
   assert.equal(element('connection').hidden, true);
 });
-
