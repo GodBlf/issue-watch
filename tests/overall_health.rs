@@ -109,3 +109,57 @@ async fn status_endpoint_remains_available_when_business_is_stalled() {
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn pending_repository_check_does_not_block_status_requests() {
+    use async_trait::async_trait;
+    use issue_watch::{
+        github::{GithubIssue, IssueSource},
+        github_health::GithubHealth,
+        Store,
+    };
+    struct HangingSource;
+    #[async_trait]
+    impl IssueSource for HangingSource {
+        async fn list_issues(
+            &self,
+            _: &str,
+            _: Option<chrono::DateTime<Utc>>,
+            _: u32,
+        ) -> anyhow::Result<Vec<GithubIssue>> {
+            std::future::pending().await
+        }
+    }
+    let health = observed();
+    let monitor = GithubHealth::new(health.clone(), &["owner/repository".into()]);
+    let store = Store::open_in_memory().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(issue_watch::health::serve(listener, health));
+    let check = monitor.poll_with_clock(&HangingSource, &store, "owner/repository", || {
+        Utc::now() - chrono::Duration::minutes(6)
+    });
+    let read = async {
+        reqwest::get(format!("http://{address}/api/status"))
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap()
+    };
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::select! {
+            biased;
+            _ = check => panic!("hanging source must remain pending"),
+            response = read => response,
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(response["status"], "error");
+    assert_eq!(
+        response["components"]["progress"]["details"]["active"],
+        true
+    );
+    server.abort();
+}
