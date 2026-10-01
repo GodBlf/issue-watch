@@ -44,8 +44,8 @@ fn enqueue_and_binding_changes_are_visible_before_a_poll_finishes() {
         .unwrap()
         .with_health(health.clone())
         .unwrap();
-    store.insert_notification(&issue(1)).unwrap();
     store.bind_user("private_openid").unwrap();
+    store.insert_notification(&issue(1)).unwrap();
     let snapshot = health.snapshot();
     assert_eq!(
         snapshot.components["notification_queue"].details["pending"],
@@ -62,6 +62,7 @@ fn legacy_queue_times_remain_unknown_instead_of_copying_issue_creation_time() {
     let path = dir.path().join("legacy.sqlite");
     let connection = rusqlite::Connection::open(&path).unwrap();
     connection.execute_batch("CREATE TABLE issue_notifications(repository TEXT NOT NULL,number INTEGER NOT NULL,title TEXT NOT NULL,author TEXT NOT NULL,created_at TEXT NOT NULL,url TEXT NOT NULL,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_attempt_at TEXT,last_error TEXT,PRIMARY KEY(repository,number)); INSERT INTO issue_notifications(repository,number,title,author,created_at,url,state,last_error) VALUES('o/r',1,'hello','a','2020-01-01T00:00:00Z','https://example.com','permanent_failure','rejected');").unwrap();
+    connection.execute_batch("CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO settings VALUES('qq_user_openid','legacy-user');").unwrap();
     drop(connection);
     let store = Store::open(&path).unwrap();
     let health = Health::new(vec![]);
@@ -80,6 +81,15 @@ fn legacy_queue_times_remain_unknown_instead_of_copying_issue_creation_time() {
 }
 #[async_trait]
 impl MessageSink for Sink {
+    async fn reply(
+        &self,
+        user_openid: &str,
+        text: &str,
+        _: &str,
+    ) -> std::result::Result<(), SendError> {
+        self.send(user_openid, text).await
+    }
+
     async fn send(&self, _: &str, _: &str) -> Result<(), SendError> {
         self.0.lock().unwrap().take().unwrap()
     }

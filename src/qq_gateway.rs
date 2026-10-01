@@ -1,7 +1,11 @@
-use crate::store::Store;
+use crate::{
+    qq::{MessageSink, QqHttpSender, SendError},
+    store::Store,
+};
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
+use std::sync::Arc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 #[derive(Debug, Deserialize)]
@@ -13,7 +17,14 @@ struct GatewayEvent {
 }
 
 pub async fn run_gateway(gateway_url: &str, access_token: &str, database_path: &str) -> Result<()> {
-    gateway(gateway_url, access_token, database_path, None).await
+    gateway(
+        gateway_url,
+        access_token,
+        database_path,
+        Arc::new(QqHttpSender::new(access_token.into())),
+        None,
+    )
+    .await
 }
 pub async fn run_gateway_observed(
     gateway_url: &str,
@@ -21,7 +32,31 @@ pub async fn run_gateway_observed(
     database_path: &str,
     health: &crate::qq_health::QqHealth,
 ) -> Result<()> {
-    let result = gateway(gateway_url, access_token, database_path, Some(health)).await;
+    run_gateway_with_sender_observed(
+        gateway_url,
+        access_token,
+        database_path,
+        Arc::new(QqHttpSender::new(access_token.into())),
+        health,
+    )
+    .await
+}
+
+pub async fn run_gateway_with_sender_observed(
+    gateway_url: &str,
+    access_token: &str,
+    database_path: &str,
+    sender: Arc<dyn MessageSink>,
+    health: &crate::qq_health::QqHealth,
+) -> Result<()> {
+    let result = gateway(
+        gateway_url,
+        access_token,
+        database_path,
+        sender,
+        Some(health),
+    )
+    .await;
     if let Err(error) = &result {
         if error.chain().filter_map(|error|error.downcast_ref::<tokio_tungstenite::tungstenite::Error>()).any(|error|matches!(error,tokio_tungstenite::tungstenite::Error::Http(response) if matches!(response.status().as_u16(),401|403))) {
             health.authentication(false,Some("Gateway authentication rejected"));
@@ -40,6 +75,7 @@ async fn gateway(
     gateway_url: &str,
     access_token: &str,
     database_path: &str,
+    sender: Arc<dyn MessageSink>,
     health: Option<&crate::qq_health::QqHealth>,
 ) -> Result<()> {
     let store = Store::open(database_path)?;
@@ -63,10 +99,12 @@ async fn gateway(
             }
             message = socket.next() => match message { Some(message) => message?, None => break }
         };
-        if let Message::Close(Some(frame)) = &message {
-            if [4003u16, 4004].contains(&u16::from(frame.code)) {
-                if let Some(health) = health {
-                    health.authentication(false, Some("Gateway authentication rejected"));
+        if let Message::Close(frame) = &message {
+            if let Some(frame) = frame {
+                if [4003u16, 4004].contains(&u16::from(frame.code)) {
+                    if let Some(health) = health {
+                        health.authentication(false, Some("Gateway authentication rejected"));
+                    }
                 }
             }
             break;
@@ -109,14 +147,53 @@ async fn gateway(
                             let openid = data
                                 .get("author")
                                 .and_then(|v| v.get("user_openid"))
-                                .and_then(|v| v.as_str());
-                            if content.trim() == "/bind" {
-                                if let Some(openid) = openid {
-                                    let bound = store.bind_user(openid)?;
-                                    if let Some(health) = health {
-                                        health.refresh_queue(&store)?;
+                                .and_then(|v| v.as_str())
+                                .filter(|id| !id.trim().is_empty());
+                            let message_id = data
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .filter(|id| !id.is_empty());
+                            if let (Some(openid), Some(message_id)) = (openid, message_id) {
+                                match crate::qq::private_command(&store, content, openid) {
+                                    Ok(Some(reply)) => {
+                                        if let Some(health) = health {
+                                            health.refresh_queue(&store)?;
+                                        }
+                                        tracing::info!(
+                                            command = content.trim(),
+                                            "QQ broadcast subscription command processed"
+                                        );
+                                        let sender = sender.clone();
+                                        let openid = openid.to_owned();
+                                        let message_id = message_id.to_owned();
+                                        let health = health.cloned();
+                                        // HTTP replies must not block WebSocket heartbeats.
+                                        tokio::spawn(async move {
+                                            match sender.reply(&openid, reply, &message_id).await {
+                                                Ok(()) => {
+                                                    if let Some(health) = health {
+                                                        health.authentication(true, None);
+                                                    }
+                                                }
+                                                Err(error) => {
+                                                    if matches!(error, SendError::Authentication(_))
+                                                    {
+                                                        if let Some(health) = health {
+                                                            health.authentication(
+                                                                false,
+                                                                Some(&error.to_string()),
+                                                            );
+                                                        }
+                                                    }
+                                                    tracing::warn!(%error, "QQ command reply failed; subscription change remains committed");
+                                                }
+                                            }
+                                        });
                                     }
-                                    tracing::info!(bound, "QQ private target binding processed");
+                                    Ok(None) => {}
+                                    Err(error) => {
+                                        tracing::warn!(%error, "QQ subscription command failed")
+                                    }
                                 }
                             }
                         }

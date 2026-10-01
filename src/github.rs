@@ -201,6 +201,6 @@ mod tests {
                 .unwrap(),
             1
         );
-        assert_eq!(store.pending_notifications(now).unwrap()[0].number, 3);
+        assert_eq!(store.recorded_notifications().unwrap()[0].number, 3);
     }
 }

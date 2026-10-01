@@ -16,11 +16,25 @@ pub enum SendError {
     Permanent(String),
 }
 
-pub fn bind_from_private_message(store: &Store, content: &str, user_openid: &str) -> Result<bool> {
-    if content.trim() != "/bind" {
-        return Ok(false);
+/// Commit the subscription change before acknowledging it to the sender.
+pub fn private_command(
+    store: &Store,
+    content: &str,
+    user_openid: &str,
+) -> Result<Option<&'static str>> {
+    match content.trim() {
+        "/bind" => Ok(Some(if store.bind_user(user_openid)? {
+            "success"
+        } else {
+            "already bound"
+        })),
+        "/unbind" => Ok(Some(if store.unbind_user(user_openid)? {
+            "success"
+        } else {
+            "not bound"
+        })),
+        _ => Ok(None),
     }
-    store.bind_user(user_openid)
 }
 
 pub fn render_notification(issue: &IssueNotification) -> String {
@@ -42,6 +56,12 @@ pub fn render_notification(issue: &IssueNotification) -> String {
 #[async_trait]
 pub trait MessageSink: Send + Sync {
     async fn send(&self, user_openid: &str, text: &str) -> std::result::Result<(), SendError>;
+    async fn reply(
+        &self,
+        user_openid: &str,
+        text: &str,
+        message_id: &str,
+    ) -> std::result::Result<(), SendError>;
 }
 
 pub struct QqHttpSender {
@@ -69,6 +89,7 @@ impl QqHttpSender {
         access_token: &str,
         user_openid: &str,
         text: &str,
+        message_id: Option<&str>,
     ) -> std::result::Result<(), SendError> {
         send_message(
             &self.client,
@@ -76,6 +97,7 @@ impl QqHttpSender {
             access_token,
             user_openid,
             text,
+            message_id,
         )
         .await
     }
@@ -89,7 +111,16 @@ struct ErrorBody {
 #[async_trait]
 impl MessageSink for QqHttpSender {
     async fn send(&self, user_openid: &str, text: &str) -> std::result::Result<(), SendError> {
-        self.send_with_token(&self.access_token, user_openid, text)
+        self.send_with_token(&self.access_token, user_openid, text, None)
+            .await
+    }
+    async fn reply(
+        &self,
+        user_openid: &str,
+        text: &str,
+        message_id: &str,
+    ) -> std::result::Result<(), SendError> {
+        self.send_with_token(&self.access_token, user_openid, text, Some(message_id))
             .await
     }
 }
@@ -151,11 +182,24 @@ impl RefreshingQqHttpSender {
     }
 }
 
-#[async_trait]
-impl MessageSink for RefreshingQqHttpSender {
-    async fn send(&self, user_openid: &str, text: &str) -> std::result::Result<(), SendError> {
+impl RefreshingQqHttpSender {
+    async fn send_or_reply(
+        &self,
+        user_openid: &str,
+        text: &str,
+        message_id: Option<&str>,
+    ) -> std::result::Result<(), SendError> {
         let token = self.access_token.read().await.clone();
-        match send_message(&self.client, &self.endpoint, &token, user_openid, text).await {
+        match send_message(
+            &self.client,
+            &self.endpoint,
+            &token,
+            user_openid,
+            text,
+            message_id,
+        )
+        .await
+        {
             Err(SendError::Authentication(_)) => {
                 let refreshed = fetch_access_token_from(
                     &self.client,
@@ -166,11 +210,44 @@ impl MessageSink for RefreshingQqHttpSender {
                 .await
                 .map_err(|error| SendError::Authentication(error.to_string()))?;
                 *self.access_token.write().await = refreshed.clone();
-                send_message(&self.client, &self.endpoint, &refreshed, user_openid, text).await
+                send_message(
+                    &self.client,
+                    &self.endpoint,
+                    &refreshed,
+                    user_openid,
+                    text,
+                    message_id,
+                )
+                .await
             }
             result => result,
         }
     }
+}
+
+#[async_trait]
+impl MessageSink for RefreshingQqHttpSender {
+    async fn send(&self, user_openid: &str, text: &str) -> std::result::Result<(), SendError> {
+        self.send_or_reply(user_openid, text, None).await
+    }
+    async fn reply(
+        &self,
+        user_openid: &str,
+        text: &str,
+        message_id: &str,
+    ) -> std::result::Result<(), SendError> {
+        self.send_or_reply(user_openid, text, Some(message_id))
+            .await
+    }
+}
+
+fn message_body(text: &str, message_id: Option<&str>) -> serde_json::Value {
+    let mut body = serde_json::json!({"content":text,"msg_type":0});
+    if let Some(id) = message_id {
+        body["msg_id"] = id.into();
+        body["msg_seq"] = 1.into();
+    }
+    body
 }
 
 async fn send_message(
@@ -179,11 +256,12 @@ async fn send_message(
     access_token: &str,
     user_openid: &str,
     text: &str,
+    message_id: Option<&str>,
 ) -> std::result::Result<(), SendError> {
     let response = client
         .post(format!("{endpoint}/{user_openid}/messages"))
         .header("Authorization", format!("QQBot {access_token}"))
-        .json(&serde_json::json!({"content": text}))
+        .json(&message_body(text, message_id))
         .send()
         .await
         .map_err(|e| SendError::Retryable(e.to_string()))?;
@@ -211,7 +289,7 @@ async fn send_message(
         let retry = client
             .post(format!("{endpoint}/{user_openid}/messages"))
             .header("Authorization", format!("QQBot {access_token}"))
-            .json(&serde_json::json!({"content": fallback}))
+            .json(&message_body(&fallback, message_id))
             .send()
             .await
             .map_err(|e| SendError::Retryable(e.to_string()))?;
@@ -314,10 +392,29 @@ mod tests {
     }
 
     #[test]
-    fn binds_only_the_first_private_target() {
+    fn private_commands_join_leave_and_acknowledge() {
         let store = Store::open_in_memory().unwrap();
-        assert!(bind_from_private_message(&store, "/bind", "openid-1").unwrap());
-        assert!(!bind_from_private_message(&store, "/bind", "openid-2").unwrap());
-        assert_eq!(store.get_bound_user().unwrap().as_deref(), Some("openid-1"));
+        assert_eq!(
+            private_command(&store, " /bind ", "openid-1").unwrap(),
+            Some("success")
+        );
+        assert_eq!(
+            private_command(&store, "/bind", "openid-2").unwrap(),
+            Some("success")
+        );
+        assert_eq!(
+            private_command(&store, "/bind", "openid-1").unwrap(),
+            Some("already bound")
+        );
+        assert_eq!(
+            private_command(&store, "/unbind", "openid-1").unwrap(),
+            Some("success")
+        );
+        assert_eq!(
+            private_command(&store, "/unbind", "openid-1").unwrap(),
+            Some("not bound")
+        );
+        assert_eq!(private_command(&store, "hello", "openid-3").unwrap(), None);
+        assert_eq!(store.bound_users().unwrap(), ["openid-2"]);
     }
 }

@@ -18,3 +18,9 @@ _Avoid_: 修复任务、PR 通知
 
 **通知目标（Notification Destination）**：接收 issue 通知的 QQ 会话。
 _Avoid_: 监控仓库、消息来源
+
+**广播订阅（Broadcast Subscription）**：通知目标加入共享 Issue 通知的关系；所有订阅者关注相同的监控仓库。
+_Avoid_: 用户配置、独立监控
+
+**通知投递（Notification Delivery）**：一条 Issue 通知向一个通知目标的发送及其结果。
+_Avoid_: Issue 处理状态、广播结果

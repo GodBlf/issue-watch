@@ -24,22 +24,24 @@ async fn deliver<S: MessageSink>(
     if let Some(h) = health {
         h.refresh_queue(store)?;
     }
-    let target = match store.get_bound_user()? {
-        Some(value) => value,
-        None => return Ok(0),
-    };
-    let pending = store.pending_notifications(Utc::now())?;
+    let pending = store.pending_deliveries(Utc::now())?;
     let mut delivered = 0;
-    for (index, issue) in pending.into_iter().enumerate() {
+    for (index, delivery) in pending.into_iter().enumerate() {
         if index > 0 {
             sleep(TokioDuration::from_secs(3)).await;
+        }
+        if !store.delivery_is_pending(&delivery)? {
+            continue;
         }
         if let Some(h) = health {
             h.progress(true, "sending");
         }
-        match sink.send(&target, &render_notification(&issue)).await {
+        match sink
+            .send(&delivery.user_openid, &render_notification(&delivery.issue))
+            .await
+        {
             Ok(()) => {
-                store.mark_sent(&issue)?;
+                store.mark_sent(&delivery)?;
                 delivered += 1;
                 if let Some(h) = health {
                     h.sent("sent", None);
@@ -47,19 +49,19 @@ async fn deliver<S: MessageSink>(
                 }
             }
             Err(SendError::Retryable(error)) => {
-                store.mark_retry(&issue, Utc::now() + Duration::seconds(30), &error)?;
+                store.mark_retry(&delivery, Utc::now() + Duration::seconds(30), &error)?;
                 if let Some(h) = health {
                     h.sent("retrying", Some(&error));
                 }
             }
             Err(SendError::Permanent(error)) => {
-                store.mark_permanent_failure(&issue, &error)?;
+                store.mark_permanent_failure(&delivery, &error)?;
                 if let Some(h) = health {
                     h.sent("permanent_failed", Some(&error));
                 }
             }
             Err(SendError::Authentication(error)) => {
-                store.mark_permanent_failure(&issue, &error)?;
+                store.mark_permanent_failure(&delivery, &error)?;
                 if let Some(h) = health {
                     h.sent("permanent_failed", Some(&error));
                     h.authentication(false, Some(&error));
@@ -88,6 +90,15 @@ mod tests {
     }
     #[async_trait]
     impl MessageSink for Fake {
+        async fn reply(
+            &self,
+            user_openid: &str,
+            text: &str,
+            _: &str,
+        ) -> std::result::Result<(), SendError> {
+            self.send(user_openid, text).await
+        }
+
         async fn send(&self, _: &str, _: &str) -> std::result::Result<(), SendError> {
             self.result.lock().unwrap().pop().unwrap_or(Ok(()))
         }
@@ -112,6 +123,6 @@ mod tests {
             result: std::sync::Mutex::new(vec![Ok(())]),
         };
         assert_eq!(deliver_pending(&store, &fake).await.unwrap(), 1);
-        assert!(store.pending_notifications(Utc::now()).unwrap().is_empty());
+        assert!(store.pending_deliveries(Utc::now()).unwrap().is_empty());
     }
 }
