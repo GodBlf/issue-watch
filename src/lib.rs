@@ -3,6 +3,7 @@ pub mod github;
 pub mod model;
 pub mod qq;
 pub mod qq_gateway;
+pub mod qq_health;
 pub mod queue;
 pub mod reload;
 pub mod store;
