@@ -12,12 +12,14 @@
 <p id="connection" role="alert" hidden></p>
 <section aria-live="polite"><small>整体状态</small><div id="status" class="status-unknown">未知</div>
 <dl><dt>数据更新时间</dt><dd id="updated">尚无数据</dd><dt>启动时间</dt><dd id="started">未知</dd><dt>运行时长</dt><dd id="uptime">未知</dd></dl></section>
+<p id="reasons"></p>
 <section><h2>业务观察</h2><div id="components">尚无检查结果，等待业务观察。</div></section>
 <small>连接失败仅表示网页暂时无法取得状态，不能确定程序、服务器或 SSH 隧道的具体情况。服务器不可达时，新打开页面可能直接显示浏览器连接错误。时间使用 UTC。</small>
 <script>
 const labels = {normal:'正常',warning:'警告',error:'异常',unknown:'未知'};
-const names = {github:'GitHub 检查',qq:'QQ 与通知目标',queue:'通知队列',progress:'业务推进',overall:'整体健康'};
-const fieldNames = {status:'状态',error:'当前错误',repository:'监控仓库',repositories:'监控仓库',last_attempt_at:'最近尝试时间',last_success_at:'最近成功时间',consecutive_failures:'连续失败次数',pending:'待发送',retrying:'重试中',permanent_failed:'永久失败',connected:'连接状态',bound:'绑定状态'};
+const names = {github:'GitHub 检查',qq_gateway:'QQ 连接',qq_binding:'通知目标绑定',qq_auth:'QQ 鉴权',qq_delivery:'实际通知发送',notification_queue:'通知队列',progress:'业务推进',overall:'整体健康'};
+const fieldNames = {status:'状态',error:'当前错误',repository:'监控仓库',repositories:'监控仓库',last_attempt_at:'最近尝试时间',last_success_at:'最近成功时间',consecutive_failures:'连续失败次数',pending:'待发送',retrying:'重试中',permanent_failed:'永久失败',connected:'连接状态',bound:'绑定状态',result:'结果',at:'观察时间',active:'正在处理',stage:'当前步骤',last_progress_at:'最近推进时间',threshold_seconds:'卡住阈值（秒）',stalled:'已停止推进',failures:'失败记录',number:'Issue 编号',state:'通知状态',enqueued_at:'入队时间',sent_at:'发送时间',last_error:'失败原因',sent:'已发送',errors:'失败记录'};
+const values = {...labels,unverified:'未验证',verified:'已验证',failed:'失败',sent:'已发送',retrying:'重试中',permanent_failed:'永久失败',permanent_failure:'永久失败',pending:'待发送',waiting:'等待下一轮检查',working:'正在处理',checking_repository:'检查仓库',page_complete:'完成一页检查',repository_complete:'完成仓库检查',sending:'发送通知',delivery_started:'开始投递',delivery_complete:'投递结束',notification_sent:'通知发送完成',notification_complete:'通知处理完成'};
 let lastData = null;
 let loading = false;
 function renderDetails(value, prefix='') {
@@ -25,7 +27,7 @@ function renderDetails(value, prefix='') {
   if (Array.isArray(value)) return value.map(item=>renderDetails(item,prefix)).join('\n\n');
   if (typeof value === 'object') return Object.entries(value).map(([key,item])=>(fieldNames[key]||key)+'：'+renderDetails(item,prefix)).join('\n');
   if (typeof value === 'boolean') return value ? '是' : '否';
-  return String(value);
+  return values[value] || String(value);
 }
 function render(data) {
   const status = labels[data.status] ? data.status : 'unknown';
@@ -34,9 +36,11 @@ function render(data) {
   document.getElementById('updated').textContent = data.updated_at;
   document.getElementById('started').textContent = data.started_at;
   document.getElementById('uptime').textContent = data.uptime_seconds+' 秒';
+  const reasons=data.components?.overall?.details?.reasons||[];
+  document.getElementById('reasons').textContent=reasons.map(reason=>(names[reason.component]||reason.component)+'：'+(labels[reason.status]||'未知')).join('；');
   const container=document.getElementById('components');
   container.replaceChildren();
-  const entries=Object.entries(data.components||{}).filter(([name])=>name!=='overall');
+  const entries=Object.entries(data.components||{}).filter(([name])=>!['overall','github_progress','notification_progress'].includes(name));
   if (!entries.length) container.textContent='尚无检查结果，等待业务观察。';
   for (const [name,component] of entries) {
     const block=document.createElement('div'); block.className='component';

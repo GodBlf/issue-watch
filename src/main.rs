@@ -28,6 +28,7 @@ async fn main() -> Result<()> {
     let github_health = GithubHealth::new(health.clone(), &config.file.repositories);
     let health_bind =
         std::env::var("ISSUE_WATCH_HEALTH_BIND").unwrap_or_else(|_| "127.0.0.1:8080".into());
+    health.set_poll_interval(config.file.poll_interval_seconds);
     let health_listener = tokio::net::TcpListener::bind(&health_bind).await?;
     info!(address = %health_listener.local_addr()?, "health dashboard listening");
     let health_server = health.clone();
@@ -129,6 +130,7 @@ async fn main() -> Result<()> {
             issue_watch::reload::next_monitoring_event(&mut interval, &mut changes).await?
         {
             active = updated;
+            health.set_poll_interval(active.poll_interval_seconds);
             github_health.sync_repositories(&active.repositories);
             interval =
                 tokio::time::interval(std::time::Duration::from_secs(active.poll_interval_seconds));
