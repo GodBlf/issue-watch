@@ -1,0 +1,13 @@
+services:
+  issue-watch:
+    build: .
+    restart: unless-stopped
+    environment:
+      ISSUE_WATCH_CONFIG: /app/config.toml
+      QQ_APP_ID: ${QQ_APP_ID}
+      QQ_APP_SECRET: ${QQ_APP_SECRET}
+      QQ_ACCESS_TOKEN: ${QQ_ACCESS_TOKEN}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - ./data:/app/data
