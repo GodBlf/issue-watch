@@ -87,55 +87,22 @@ async fn main() -> Result<()> {
         ))
     });
     eprintln!("Starting monitoring loop");
-    if let Some(token) = access_token.clone() {
+    if let Some(gateway_sender) = sender.clone() {
         let configured_gateway = std::env::var("QQ_GATEWAY_URL").ok();
         let database_path = config.file.database_path.clone();
         let gateway_health = qq_health.clone();
-        let gateway_sender = sender
-            .as_ref()
-            .expect("sender exists with access token")
-            .clone();
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?;
         tokio::spawn(async move {
             loop {
-                let gateway_url = match &configured_gateway {
-                    Some(url) => Ok(url.clone()),
-                    None => issue_watch::qq::fetch_gateway_url(&client, &token).await,
-                };
-                match gateway_url {
-                    Ok(url) => {
-                        if let Err(error) =
-                            issue_watch::qq_gateway::run_gateway_with_sender_observed(
-                                &url,
-                                &token,
-                                &database_path,
-                                gateway_sender.clone(),
-                                &gateway_health,
-                            )
-                            .await
-                        {
-                            warn!(%error,"QQ gateway failed; reconnecting");
-                        }
-                    }
-                    Err(error) => {
-                        gateway_health.gateway(false, Some(&error.to_string()));
-                        if error
-                            .chain()
-                            .filter_map(|error| error.downcast_ref::<reqwest::Error>())
-                            .any(|error| {
-                                error
-                                    .status()
-                                    .is_some_and(|status| matches!(status.as_u16(), 401 | 403))
-                            })
-                        {
-                            gateway_health
-                                .authentication(false, Some("QQ gateway authentication rejected"));
-                        }
-                        warn!(%error,"QQ gateway URL unavailable; reconnecting");
-                    }
+                if let Err(error) = issue_watch::qq_gateway::run_refreshing_gateway_observed(
+                    gateway_sender.clone(),
+                    "https://api.sgroup.qq.com/gateway",
+                    configured_gateway.as_deref(),
+                    &database_path,
+                    &gateway_health,
+                )
+                .await
+                {
+                    warn!(%error, "QQ gateway failed; reconnecting");
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }

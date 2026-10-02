@@ -64,7 +64,10 @@ impl Health {
     /// Register credentials acquired after startup before publishing their related errors.
     pub fn add_secret(&self, secret: String) {
         if !secret.is_empty() {
-            self.0.secrets.write().unwrap().push(secret);
+            let mut secrets = self.0.secrets.write().unwrap();
+            if !secrets.contains(&secret) {
+                secrets.push(secret);
+            }
         }
     }
     pub fn snapshot(&self) -> Snapshot {

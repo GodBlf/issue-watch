@@ -183,6 +183,25 @@ impl RefreshingQqHttpSender {
 }
 
 impl RefreshingQqHttpSender {
+    pub async fn current_token(&self) -> String {
+        self.access_token.read().await.clone()
+    }
+
+    /// Refresh only if another caller has not already replaced the rejected token.
+    pub async fn refresh_rejected_token(&self, rejected: &str) -> Result<String> {
+        let mut token = self.access_token.write().await;
+        if token.as_str() == rejected {
+            *token = fetch_access_token_from(
+                &self.client,
+                &self.token_endpoint,
+                &self.app_id,
+                &self.app_secret,
+            )
+            .await?;
+        }
+        Ok(token.clone())
+    }
+
     async fn send_or_reply(
         &self,
         user_openid: &str,
@@ -201,15 +220,10 @@ impl RefreshingQqHttpSender {
         .await
         {
             Err(SendError::Authentication(_)) => {
-                let refreshed = fetch_access_token_from(
-                    &self.client,
-                    &self.token_endpoint,
-                    &self.app_id,
-                    &self.app_secret,
-                )
-                .await
-                .map_err(|error| SendError::Authentication(error.to_string()))?;
-                *self.access_token.write().await = refreshed.clone();
+                let refreshed = self
+                    .refresh_rejected_token(&token)
+                    .await
+                    .map_err(|error| SendError::Authentication(error.to_string()))?;
                 send_message(
                     &self.client,
                     &self.endpoint,
@@ -359,8 +373,16 @@ async fn fetch_access_token_from(
 }
 
 pub async fn fetch_gateway_url(client: &Client, access_token: &str) -> Result<String> {
+    fetch_gateway_url_from(client, "https://api.sgroup.qq.com/gateway", access_token).await
+}
+
+pub(crate) async fn fetch_gateway_url_from(
+    client: &Client,
+    endpoint: &str,
+    access_token: &str,
+) -> Result<String> {
     let body = client
-        .get("https://api.sgroup.qq.com/gateway")
+        .get(endpoint)
         .timeout(std::time::Duration::from_secs(30))
         .header("Authorization", format!("QQBot {access_token}"))
         .send()
