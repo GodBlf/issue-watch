@@ -21,6 +21,9 @@ def main():
         (root / "data").mkdir()
         config = root / "config/config.toml"
         config.write_text('poll_interval_seconds = 60\ndatabase_path = "data/issue-watch.sqlite3"\nrepositories = ["owner/repository"]\n')
+        # Model a private configuration owned by the host administrator, while the image runs as root.
+        os.chmod(config, 0o600)
+        os.chown(config, 1000, 1000)
         (root / ".env.local").write_text("QQ_APP_ID=test\nQQ_APP_SECRET=smoke-secret\nQQ_ACCESS_TOKEN=smoke-token\nQQ_GATEWAY_URL=ws://127.0.0.1:9\n")
         override = root / "network.yml"
         override.write_text("networks:\n  default:\n    internal: true\n")
@@ -84,6 +87,7 @@ def main():
             assert api("/api/admin/subscriptions", "POST", {"user_openid": "untrusted"}, origin="https://example.com")[0] == 403
             settings = api("/api/admin/config")[1]
             assert api("/api/admin/config", "PATCH", {"version": settings["version"], "poll_interval_seconds": 5})[0] == 200
+            assert (config.stat().st_uid, config.stat().st_gid, config.stat().st_mode & 0o777) == (1000, 1000, 0o600)
             assert api("/api/admin/config", "PATCH", {"version": settings["version"], "poll_interval_seconds": 10})[0] == 409
             wait_for(lambda settings: settings["stage"] == "applied" and settings["applied"]["poll_interval_seconds"] == 5, lambda: api("/api/admin/config")[1])
             assert "poll_interval_seconds = 5" in config.read_text()
@@ -109,6 +113,13 @@ def main():
                 assert db.execute("SELECT user_openid FROM broadcast_subscriptions").fetchall() == [("smoke-subscriber",)]
                 assert db.execute("SELECT cursor FROM monitored_repositories WHERE name='owner/another'").fetchone() == ("2020-01-01T00:00:00+00:00",)
                 assert db.execute("SELECT number,state FROM notification_deliveries ORDER BY number").fetchall() == [(1, "sent"), (2, "retry")]
+            override.write_text("networks:\n  default:\n    internal: true\nservices:\n  issue-watch:\n    volumes:\n      - ${ISSUE_WATCH_ROOT}/config:/app/config:ro\n")
+            run("up", "-d", "--no-build", "--pull", "never", "--force-recreate")
+            wait_for(lambda status: "qq_binding" in status["components"])
+            readonly = api("/api/admin/config")[1]
+            assert api("/api/admin/config", "PATCH", {"version": readonly["version"], "poll_interval_seconds": 7})[0] == 500
+            assert api("/api/admin/config")[1]["applied"]["poll_interval_seconds"] == 5
+            assert "poll_interval_seconds = 5" in config.read_text()
             print("Production Compose smoke passed: loopback port, writable atomic config, management API and origins, reload/application, subscription/note/cursor/delivery persistence, redacted status; external network blocked.")
         finally:
             run("down")

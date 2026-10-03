@@ -306,6 +306,62 @@ async fn management_mutations_reject_missing_wrong_origin_and_cross_site_headers
 }
 
 #[tokio::test]
+async fn startup_edits_do_not_redirect_management_to_another_database_or_fake_application() {
+    let directory = tempfile::tempdir().unwrap();
+    let config_path = directory.path().join("config.toml");
+    let original_database = directory.path().join("original.sqlite3");
+    let redirected_database = directory.path().join("redirected.sqlite3");
+    let original = issue_watch::config::FileConfig {
+        poll_interval_seconds: 60,
+        repositories: vec!["owner/repo".into()],
+        database_path: original_database.to_str().unwrap().into(),
+    };
+    let redirected = issue_watch::config::FileConfig {
+        poll_interval_seconds: 120,
+        database_path: redirected_database.to_str().unwrap().into(),
+        ..original.clone()
+    };
+    std::fs::write(&config_path, toml::to_string(&redirected).unwrap()).unwrap();
+    let health = Health::new(vec![]);
+    let admin = Admin::with_active(&config_path, &original, health.clone()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(serve(listener, health, admin));
+    let client = reqwest::Client::new();
+    let snapshot: Value = client
+        .get(format!("{base}/api/admin/config"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(snapshot["stage"], "saved");
+    assert_eq!(snapshot["applied"]["poll_interval_seconds"], 60);
+    assert_eq!(
+        client
+            .post(format!("{base}/api/admin/subscriptions"))
+            .header("origin", &base)
+            .header("x-issue-watch-admin", "1")
+            .json(&json!({"user_openid":"original-target"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        201
+    );
+    assert_eq!(
+        Store::open(&original_database)
+            .unwrap()
+            .bound_users()
+            .unwrap(),
+        ["original-target"]
+    );
+    assert!(!redirected_database.exists());
+    task.abort();
+}
+
+#[tokio::test]
 async fn polling_changes_are_saved_but_not_reported_applied_and_stale_writes_are_rejected() {
     let f = Fixture::new().await;
     let before = f.config().await;

@@ -8,7 +8,7 @@ class Element {
   append(...nodes) { this.children.push(...nodes); }
   replaceChildren() { this.children=[]; this.textContent=''; }
   addEventListener(name, callback) { this.events[name]=callback; }
-  querySelectorAll(tag) { return this.children.flatMap(child => [ ...(child.tag===tag ? [child] : []), ...child.querySelectorAll(tag)]); }
+  querySelectorAll(tag) { return this.children.flatMap(child => [ ...(tag.split(',').includes(child.tag) ? [child] : []), ...child.querySelectorAll(tag)]); }
   querySelector(tag) { return this.querySelectorAll(tag)[0]; }
   contains(node) { return this === node || this.children.some(child=>child.contains(node)); }
   reset() { Object.values(this.elements).forEach(element => element.value=''); }
@@ -21,9 +21,10 @@ function setup() {
     const form=byId(id); for(const name of names) { form.elements[name]=new Element('input'); form.append(form.elements[name]); } form.append(new Element('button'));
   }
   const requests=[], intervals=[]; let rows=[], config={version:'v1',stage:'applied',error:null,saved:{repositories:['owner/repo'],poll_interval_seconds:60},applied:{repositories:['owner/repo'],poll_interval_seconds:60}};
-  let allowConfirm=true;
+  let allowConfirm=true, pendingGate=null;
   const sandbox={document:{getElementById:byId,createElement:tag=>new Element(tag),activeElement:null},AbortSignal:{timeout:()=>({})},confirm:()=>allowConfirm,setInterval:(fn,ms)=>intervals.push({fn,ms}),fetch:async(path,options)=>{
     requests.push({path,...options}); let data;
+    if(options.method!=='GET' && pendingGate) await pendingGate;
     if(path.endsWith('/config')) {
       if(options.method==='PATCH') { const body=JSON.parse(options.body); if(body.version!==config.version) return {ok:false,json:async()=>({error:'配置已变化，请刷新'})}; config={...config,version:'v2',stage:'saved',saved:{...config.saved,...body}}; }
       data=config;
@@ -33,7 +34,7 @@ function setup() {
     return {ok:true,json:async()=>JSON.parse(JSON.stringify(data))};
   }};
   vm.runInNewContext(fs.readFileSync('src/admin.js','utf8'),sandbox);
-  return {byId,requests,intervals,setConfig:value=>{config=value;},setConfirm:value=>{allowConfirm=value;}};
+  return {byId,requests,intervals,setConfig:value=>{config=value;},setConfirm:value=>{allowConfirm=value;},holdWrites:()=>{let resolve;pendingGate=new Promise(done=>resolve=done);return ()=>{pendingGate=null;resolve();};}};
 }
 
 test('administrator adds, edits and confirms removal of a receiver without interpreting user text as HTML',async()=>{
@@ -48,6 +49,22 @@ test('administrator adds, edits and confirms removal of a receiver without inter
   ui.setConfirm(true); await remove.fire('click'); assert.equal(ui.requests.filter(request=>request.method==='DELETE').length,1);
   assert.equal(ui.byId('subscriptions').textContent,'尚无广播接收者。');
   assert.ok(ui.requests.filter(request=>request.method!=='GET').every(request=>request.headers['X-Issue-Watch-Admin']==='1'));
+});
+
+test('submitted inputs are protected while saves are pending and become editable afterward',async()=>{
+  const ui=setup(); await settle();
+  const release=ui.holdWrites();
+  const form=ui.byId('add-subscription'); form.elements.user_openid.value='openid-a';
+  await form.fire();
+  assert.equal(form.elements.user_openid.disabled,true,'addition inputs cannot be edited then discarded during a pending request');
+  release(); await settle();
+  assert.equal(form.elements.user_openid.disabled,false);
+  const edit=ui.byId('subscriptions').children[0].children[1]; const note=edit.children[0].children[0];
+  const releaseNote=ui.holdWrites(); note.value='123456'; await edit.fire(); assert.equal(note.disabled,true);
+  releaseNote(); await settle();
+  const intervalForm=ui.byId('poll-interval'); intervalForm.elements.seconds.value='120'; await intervalForm.elements.seconds.fire('input');
+  const releaseInterval=ui.holdWrites(); await intervalForm.fire(); assert.equal(intervalForm.elements.seconds.disabled,true);
+  releaseInterval(); await settle(); assert.equal(intervalForm.elements.seconds.disabled,false);
 });
 
 test('administrator adds and removes a shared watched repository and cannot remove the last one',async()=>{

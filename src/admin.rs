@@ -22,11 +22,18 @@ pub struct Admin {
 impl Admin {
     pub fn new(config_path: impl AsRef<Path>, health: Health) -> anyhow::Result<Self> {
         let config = FileConfig::load(&config_path)?;
+        Self::with_active(config_path, &config, health)
+    }
+    pub fn with_active(
+        config_path: impl AsRef<Path>,
+        active: &FileConfig,
+        health: Health,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             store: Arc::new(Mutex::new(
-                Store::open(config.database_path)?.with_health(health)?,
+                Store::open(&active.database_path)?.with_health(health)?,
             )),
-            config: crate::config_management::ConfigManagement::new(config_path)?,
+            config: crate::config_management::ConfigManagement::new(config_path, active.clone())?,
         })
     }
 }

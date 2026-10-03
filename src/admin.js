@@ -1,8 +1,10 @@
 (() => {
   const byId = id => document.getElementById(id);
   let subscriptionLoading = false;
+  let subscriptionWrites = 0;
   let configData = null, intervalVersion = null, intervalDirty = false, configurationLoading = false, configurationBusy = false;
   let configurationSequence = 0;
+  let repositoryRenderKey = null;
   const noteDrafts = new Map();
   async function request(path, method = 'GET', body) {
     const response = await fetch(path, {method, cache:'no-store', signal:AbortSignal.timeout(8000),
@@ -14,10 +16,11 @@
     return data;
   }
   async function refreshSubscriptions() {
-    if (subscriptionLoading) return;
+    if (subscriptionLoading || subscriptionWrites) return;
     subscriptionLoading = true;
     try {
       const rows = await request('/api/admin/subscriptions');
+      if (subscriptionWrites) return;
       const container = byId('subscriptions');
       container.replaceChildren();
       if (!rows.length) container.textContent = '尚无广播接收者。';
@@ -54,12 +57,17 @@
     finally { subscriptionLoading = false; }
   }
   async function operation(form, messageId, work) {
-    const buttons = Array.from(form.querySelectorAll('button'));
-    buttons.forEach(button => button.disabled = true);
+    const controls = Array.from(form.querySelectorAll('button,input')).map(control => [control, control.disabled]);
+    controls.forEach(([control]) => control.disabled = true);
+    const subscriptionOperation = messageId === 'subscription-message';
+    if (subscriptionOperation) subscriptionWrites++;
     byId(messageId).textContent = '正在提交…';
     try { await work(); }
     catch (error) { byId(messageId).textContent = error.message; }
-    finally { buttons.forEach(button => button.disabled = false); }
+    finally {
+      controls.forEach(([control, disabled]) => control.disabled = disabled);
+      if (subscriptionOperation) { subscriptionWrites--; await refreshSubscriptions(); }
+    }
   }
   byId('add-subscription').addEventListener('submit', event => {
     event.preventDefault();
@@ -82,6 +90,9 @@
     form.querySelector('button').disabled = !data.saved || configurationBusy;
     if (intervalDirty && intervalVersion !== data.version) byId('configuration-message').textContent = '配置已变化，当前间隔草稿尚未保存；请刷新配置后重新编辑。';
     byId('add-repository').querySelector('button').disabled = !data.saved || configurationBusy;
+    const renderKey = JSON.stringify([data.version, data.saved?.repositories, configurationBusy]);
+    if (repositoryRenderKey === renderKey) return;
+    repositoryRenderKey = renderKey;
     const container = byId('repositories'); container.replaceChildren();
     if (data.saved) for (const repository of data.saved.repositories) {
       const block = document.createElement('div'); block.className = 'component';
@@ -113,6 +124,7 @@
       const data = await request('/api/admin/config', 'PATCH', body);
       if (body.poll_interval_seconds !== undefined) intervalDirty = false;
       showConfiguration(data);
+      if (form === byId('add-repository')) form.reset();
       byId('configuration-message').textContent = '配置已保存；请查看上方的加载与应用状态。';
     });
     configurationBusy = false;

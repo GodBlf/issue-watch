@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
     let health_listener = tokio::net::TcpListener::bind(&health_bind).await?;
     info!(address = %health_listener.local_addr()?, "health dashboard listening");
     let health_server = health.clone();
-    let admin = issue_watch::admin::Admin::new(&config_path, health.clone())?;
+    let admin = issue_watch::admin::Admin::with_active(&config_path, &config.file, health.clone())?;
     let config_management = admin.config.clone();
     tokio::spawn(async move {
         if let Err(error) = issue_watch::admin::serve(health_listener, health_server, admin).await {

@@ -47,10 +47,9 @@ impl From<anyhow::Error> for SaveError {
 }
 
 impl ConfigManagement {
-    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn new(path: impl AsRef<Path>, active: FileConfig) -> Result<Self> {
         let path = std::fs::canonicalize(path)?;
         let source = std::fs::read(&path)?;
-        let config = FileConfig::parse(std::str::from_utf8(&source)?)?;
         let epoch = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
@@ -59,8 +58,8 @@ impl ConfigManagement {
             source,
             version: 1,
             epoch,
-            accepted: config.clone(),
-            applied: config,
+            accepted: active.clone(),
+            applied: active,
             error: None,
         }))))
     }
@@ -73,8 +72,9 @@ impl ConfigManagement {
         inner.error = None;
     }
     pub fn rejected(&self) {
-        self.0.lock().unwrap().error =
-            Some("热加载失败，继续使用上一份有效配置；请检查配置文件和服务日志".into());
+        let mut inner = self.0.lock().unwrap();
+        let _ = inner.read();
+        inner.error = Some("热加载失败，继续使用上一份有效配置；请检查配置文件和服务日志".into());
     }
     pub fn applied(&self, config: &FileConfig) {
         self.0.lock().unwrap().applied = config.clone();
@@ -105,14 +105,30 @@ impl ConfigManagement {
         }
         let output = toml::to_string_pretty(&candidate).map_err(anyhow::Error::from)?;
         FileConfig::parse(&output).map_err(|error| SaveError::Invalid(error.to_string()))?;
-        let permissions = std::fs::metadata(&inner.path)
-            .map_err(anyhow::Error::from)?
-            .permissions();
+        let metadata = std::fs::metadata(&inner.path).map_err(anyhow::Error::from)?;
         let mut temporary = tempfile::NamedTempFile::new_in(inner.path.parent().unwrap())
             .map_err(anyhow::Error::from)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let temporary_metadata = temporary
+                .as_file()
+                .metadata()
+                .map_err(anyhow::Error::from)?;
+            if (metadata.uid(), metadata.gid())
+                != (temporary_metadata.uid(), temporary_metadata.gid())
+            {
+                std::os::unix::fs::chown(
+                    temporary.path(),
+                    Some(metadata.uid()),
+                    Some(metadata.gid()),
+                )
+                .map_err(anyhow::Error::from)?;
+            }
+        }
         temporary
             .as_file()
-            .set_permissions(permissions)
+            .set_permissions(metadata.permissions())
             .map_err(anyhow::Error::from)?;
         temporary
             .write_all(output.as_bytes())
