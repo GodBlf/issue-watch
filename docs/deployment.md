@@ -8,6 +8,10 @@ PR 自动执行格式检查、Rust 测试、部署入口测试和镜像构建验
 
 运行环境固定在 `/home/godblf/issue-watch`：配置为 `config/config.toml`，数据库为 `data/issue-watch.sqlite3`，凭据为 `.env.local`。配置的数据库路径应为 `data/issue-watch.sqlite3` 或容器内的 `/app/data/issue-watch.sqlite3`。请保留原凭据文件，Compose 会明确读取它作为容器环境；配置目录和数据目录通过挂载提供。
 
+管理页面保存配置需要可写的配置目录挂载。升级已有服务器时，由管理员重新安装本仓库的生产 Compose（例如按原首次准备步骤运行 `install.sh`），将旧的只读配置目录挂载更新为可写；数据库、配置位置和受限部署密钥均不变。目录须允许镜像运行用户创建、替换文件，原配置文件权限会在页面保存时保留。不要将凭据文件移到可写配置目录；自动发布镜像不会替换服务器上由管理员安装的 Compose。
+
+生产管理入口继续使用回环端口 8081，经管理员 SSH 隧道访问，例如 `ssh -N -L 127.0.0.1:18080:127.0.0.1:8081 user@server`，浏览器打开 `http://127.0.0.1:18080/`。应使用允许端口转发的管理员 SSH 身份；专用部署密钥仍禁止 TCP 转发。写入失败请先检查是否安装了新 Compose、配置挂载是否可写及文件权限。管理操作不会调整服务启动/恢复策略或自动回滚数据库。
+
 在已有 `gh` 登录和可信 SSH 连接的管理员机器执行：
 
 ```powershell
@@ -70,7 +74,7 @@ sudo env ISSUE_WATCH_ROOT=/home/godblf/issue-watch ISSUE_WATCH_IMAGE='<旧镜像
 cargo fmt --check
 cargo test --locked
 python3 -m unittest discover -s tests -p test_deploy.py -v
-node --test tests/health_dashboard_browser.cjs
+node --test tests/health_dashboard_browser.cjs tests/admin_management_browser.cjs
 bash -n deploy/install.sh
 sh -n deploy/ssh-entry
 docker build --platform linux/amd64 -t issue-watch:check .

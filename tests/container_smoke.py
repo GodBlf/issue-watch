@@ -31,19 +31,23 @@ def main():
             return subprocess.run(command + list(arguments), env=env, capture_output=True, text=True, check=True, timeout=60).stdout
 
         def snapshot():
+            return api("/api/status")[1]
+
+        def api(path, method="GET", body=None, origin="http://127.0.0.1:8080"):
             identifier = run("ps", "-q", "issue-watch").strip()
+            payload = json.dumps(body).encode() if body is not None else b""
+            request = f"{method} {path} HTTP/1.0\r\nHost: 127.0.0.1:8080\r\nConnection: close\r\nOrigin: {origin}\r\nX-Issue-Watch-Admin: 1\r\nContent-Type: application/json\r\nContent-Length: {len(payload)}\r\n\r\n" + payload.decode()
             # Docker's internal network also isolates host access on some platforms.
             response = subprocess.run([
                 "docker", "exec", identifier, "bash", "-c",
-                'exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET /api/status HTTP/1.0\\r\\n\\r\\n" >&3; cat <&3',
+                'exec 3<>/dev/tcp/127.0.0.1/8080; printf "%s" "$1" >&3; cat <&3', "request", request,
             ], capture_output=True, text=True, check=True, timeout=5).stdout
-            assert response.startswith("HTTP/1.0 200")
-            return json.loads(response.split("\n\n", 1)[1])
+            return int(response.split()[1]), json.loads(response.split("\n\n", 1)[1])
 
-        def wait_for(predicate):
+        def wait_for(predicate, read=snapshot):
             for _ in range(120):
                 try:
-                    status = snapshot()
+                    status = read()
                     if predicate(status):
                         return status
                 except (subprocess.SubprocessError, AssertionError, ValueError, IndexError):
@@ -57,6 +61,7 @@ def main():
             assert service["ports"][0]["host_ip"] == "127.0.0.1"
             assert str(service["ports"][0]["published"]) == "8081"
             assert {v["target"] for v in service["volumes"]} == {"/app/config", "/app/data"}
+            assert not next(v for v in service["volumes"] if v["target"] == "/app/config").get("read_only", False)
             run("up", "-d", "--no-build", "--pull", "never")
             wait_for(lambda status: "qq_binding" in status["components"])
             database = root / "data/issue-watch.sqlite3"
@@ -66,17 +71,37 @@ def main():
             replacement.replace(config)
             wait_for(lambda status: "owner/another" in json.dumps(status))
 
+            assert api("/api/admin/subscriptions", "POST", {"user_openid": "smoke-subscriber", "qq_number_note": "123456"})[0] == 201
+            assert api("/api/admin/subscriptions", "POST", {"user_openid": "smoke-subscriber", "qq_number_note": "unchanged"})[0] == 200
+            rows = api("/api/admin/subscriptions")[1]
+            assert rows[0]["qq_number_note"] == "123456"
+            old_id = rows[0]["id"]
+            assert api(f"/api/admin/subscriptions/{old_id}", "PATCH", {"qq_number_note": ""})[0] == 200
+            assert api("/api/admin/subscriptions")[1][0]["qq_number_note"] is None
+            assert api(f"/api/admin/subscriptions/{old_id}", "DELETE")[0] == 200
+            assert api("/api/admin/subscriptions", "POST", {"user_openid": "smoke-subscriber", "qq_number_note": "persisted"})[0] == 201
+            assert api(f"/api/admin/subscriptions/{old_id}", "DELETE")[0] == 404
+            assert api("/api/admin/subscriptions", "POST", {"user_openid": "untrusted"}, origin="https://example.com")[0] == 403
+            settings = api("/api/admin/config")[1]
+            assert api("/api/admin/config", "PATCH", {"version": settings["version"], "poll_interval_seconds": 5})[0] == 200
+            assert api("/api/admin/config", "PATCH", {"version": settings["version"], "poll_interval_seconds": 10})[0] == 409
+            wait_for(lambda settings: settings["stage"] == "applied" and settings["applied"]["poll_interval_seconds"] == 5, lambda: api("/api/admin/config")[1])
+            assert "poll_interval_seconds = 5" in config.read_text()
+
             run("stop")
             # A stopped deployment fixture with existing subscriptions and delivery progress.
             with closing(sqlite3.connect(database)) as db, db:
                 db.execute("UPDATE monitored_repositories SET cursor='2020-01-01T00:00:00+00:00' WHERE name='owner/another'")
-                db.execute("INSERT INTO broadcast_subscriptions(user_openid) VALUES ('smoke-subscriber')")
                 subscription = db.execute("SELECT id FROM broadcast_subscriptions").fetchone()[0]
                 for number, state in ((1, "sent"), (2, "retry")):
                     db.execute("INSERT INTO issue_notifications(repository,number,title,author,created_at,url,state) VALUES ('owner/another',?,'test','test','2020-01-01T00:00:00+00:00','https://example.com',?)", (number, state))
                     db.execute("INSERT INTO notification_deliveries(subscription_id,repository,number,state,next_attempt_at) VALUES (?,'owner/another',?,?,'2099-01-01T00:00:00+00:00')", (subscription, number, state))
             run("start")
             status = wait_for(lambda status: status["components"]["qq_binding"]["details"]["subscriber_count"] == 1)
+            assert api("/api/admin/subscriptions")[1][0]["qq_number_note"] == "persisted"
+            restarted = api("/api/admin/config")[1]
+            assert restarted["applied"]["poll_interval_seconds"] == 5
+            assert api("/api/admin/config", "PATCH", {"version": settings["version"], "poll_interval_seconds": 10})[0] == 409
             assert "smoke-secret" not in json.dumps(status)
             assert "smoke-token" not in json.dumps(status)
             run("stop")
@@ -84,7 +109,7 @@ def main():
                 assert db.execute("SELECT user_openid FROM broadcast_subscriptions").fetchall() == [("smoke-subscriber",)]
                 assert db.execute("SELECT cursor FROM monitored_repositories WHERE name='owner/another'").fetchone() == ("2020-01-01T00:00:00+00:00",)
                 assert db.execute("SELECT number,state FROM notification_deliveries ORDER BY number").fetchall() == [(1, "sent"), (2, "retry")]
-            print("Production Compose smoke passed: loopback port, atomic config reload, subscription/cursor/delivery persistence, redacted status; external network blocked.")
+            print("Production Compose smoke passed: loopback port, writable atomic config, management API and origins, reload/application, subscription/note/cursor/delivery persistence, redacted status; external network blocked.")
         finally:
             run("down")
 

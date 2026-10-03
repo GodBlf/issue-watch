@@ -174,7 +174,11 @@ impl Health {
     }
 }
 pub async fn serve(listener: tokio::net::TcpListener, health: Health) -> std::io::Result<()> {
-    let app = Router::new()
+    axum::serve(listener, router(health)).await
+}
+
+pub fn router(health: Health) -> Router {
+    Router::new()
         .route("/", get(|| async { Html(include_str!("health.html")) }))
         .route(
             "/api/status",
@@ -185,8 +189,7 @@ pub async fn serve(listener: tokio::net::TcpListener, health: Health) -> std::io
                 )
             }),
         )
-        .with_state(health);
-    axum::serve(listener, app).await
+        .with_state(health)
 }
 
 fn credential_marker(value: &str) -> bool {

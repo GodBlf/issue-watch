@@ -10,6 +10,13 @@ pub struct PendingDelivery {
     pub issue: IssueNotification,
 }
 
+#[derive(serde::Serialize)]
+pub struct Subscription {
+    pub id: i64,
+    pub user_openid: String,
+    pub qq_number_note: Option<String>,
+}
+
 pub struct Store {
     conn: Connection,
     health: Option<crate::health::Health>,
@@ -65,6 +72,19 @@ impl Store {
             last_error TEXT, enqueued_at TEXT, sent_at TEXT,
             PRIMARY KEY(subscription_id, repository, number));",
         )?;
+        let has_note: bool = self
+            .conn
+            .prepare("PRAGMA table_info(broadcast_subscriptions)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "qq_number_note");
+        if !has_note {
+            self.conn.execute(
+                "ALTER TABLE broadcast_subscriptions ADD COLUMN qq_number_note TEXT",
+                [],
+            )?;
+        }
         let migrated: bool = self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM settings WHERE key='broadcast_schema_version')",
             [],
@@ -263,31 +283,61 @@ impl Store {
         )
     }
     pub fn bind_user(&self, openid: &str) -> Result<bool> {
+        self.add_subscription(openid, None)
+    }
+    pub fn subscriptions(&self) -> Result<Vec<Subscription>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id,user_openid,qq_number_note FROM broadcast_subscriptions ORDER BY id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(Subscription {
+                id: row.get(0)?,
+                user_openid: row.get(1)?,
+                qq_number_note: row.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+    pub fn add_subscription(&self, openid: &str, note: Option<&str>) -> Result<bool> {
         anyhow::ensure!(
             !openid.trim().is_empty(),
             "QQ user OpenID must not be empty"
         );
         let changed = self.conn.execute(
-            "INSERT OR IGNORE INTO broadcast_subscriptions(user_openid) VALUES(?1)",
-            [openid],
+            "INSERT OR IGNORE INTO broadcast_subscriptions(user_openid,qq_number_note) VALUES(?1,?2)",
+            params![openid, note.filter(|note| !note.is_empty())],
         )?;
         self.observe_queue()?;
         Ok(changed == 1)
     }
     pub fn unbind_user(&self, openid: &str) -> Result<bool> {
+        self.remove_subscription("user_openid", rusqlite::types::Value::Text(openid.into()))
+    }
+    pub fn remove_subscription_by_id(&self, id: i64) -> Result<bool> {
+        self.remove_subscription("id", rusqlite::types::Value::Integer(id))
+    }
+    pub fn update_subscription_note(&self, id: i64, note: Option<&str>) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE broadcast_subscriptions SET qq_number_note=?2 WHERE id=?1",
+            params![id, note.filter(|note| !note.is_empty())],
+        )? == 1)
+    }
+    fn remove_subscription(&self, column: &str, identity: rusqlite::types::Value) -> Result<bool> {
         let transaction = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
         self.conn.execute(
-            "UPDATE notification_deliveries SET state='cancelled',next_attempt_at=NULL
-            WHERE subscription_id IN (SELECT id FROM broadcast_subscriptions WHERE user_openid=?1)
-            AND state IN ('pending','retry','permanent_failure')",
-            [openid],
+            &format!(
+                "UPDATE notification_deliveries SET state='cancelled',next_attempt_at=NULL
+            WHERE subscription_id IN (SELECT id FROM broadcast_subscriptions WHERE {column}=?1)
+            AND state IN ('pending','retry','permanent_failure')"
+            ),
+            [&identity],
         )?;
         let changed = self.conn.execute(
-            "DELETE FROM broadcast_subscriptions WHERE user_openid=?1",
-            [openid],
+            &format!("DELETE FROM broadcast_subscriptions WHERE {column}=?1"),
+            [&identity],
         )?;
         transaction.commit()?;
         self.observe_queue()?;

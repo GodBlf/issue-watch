@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{env, fs, path::Path};
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct FileConfig {
     #[serde(default = "default_poll_interval")]
@@ -48,7 +48,10 @@ impl Config {
 impl FileConfig {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let content = fs::read_to_string(path.as_ref()).context("read TOML config")?;
-        let file: Self = toml::from_str(&content).context("parse TOML config")?;
+        Self::parse(&content)
+    }
+    pub fn parse(content: &str) -> Result<Self> {
+        let file: Self = toml::from_str(content).context("parse TOML config")?;
         validate_repositories(&file.repositories)?;
         anyhow::ensure!(
             file.poll_interval_seconds > 0,

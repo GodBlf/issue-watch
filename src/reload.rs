@@ -56,9 +56,18 @@ pub async fn next_monitoring_event(
 
 /// Watches file contents rather than metadata so atomic editor saves are detected.
 pub async fn watch_config(
+    reload: ConfigReloader,
+    store: Store,
+    updates: tokio::sync::watch::Sender<FileConfig>,
+) {
+    watch_config_managed(reload, store, updates, None).await
+}
+
+pub async fn watch_config_managed(
     mut reload: ConfigReloader,
     store: Store,
     updates: tokio::sync::watch::Sender<FileConfig>,
+    management: Option<crate::config_management::ConfigManagement>,
 ) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
     let mut last_error = None;
@@ -69,6 +78,9 @@ pub async fn watch_config(
         }
         match reload.check(&store, Utc::now()) {
             Ok(changed) => {
+                if let Some(management) = &management {
+                    management.accepted(reload.active());
+                }
                 last_error = None;
                 if changed {
                     tracing::info!(
@@ -82,6 +94,9 @@ pub async fn watch_config(
                 }
             }
             Err(error) => {
+                if let Some(management) = &management {
+                    management.rejected();
+                }
                 let message = format!("{error:#}");
                 if last_error.as_ref() != Some(&message) {
                     tracing::warn!(%message, "Configuration reload rejected; keeping previous settings");
