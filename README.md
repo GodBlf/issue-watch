@@ -26,24 +26,25 @@ repositories = ["GodBlf/mycode-rust", "owner/another-repo"]
 
 配置检查独立于 GitHub 请求运行，监控任务在当前轮询/投递完成后使用新设置；已经开始的请求不会取消。配置更新后立即开始下一轮检查，之后使用新的间隔。
 
-Docker 建议挂载配置所在的目录，并将 `ISSUE_WATCH_CONFIG` 指向该目录中的文件。当前 Compose 的单文件挂载可能无法看到宿主机编辑器以原子替换方式保存的文件；使用单文件挂载时需原地写入文件。
+Docker Compose 挂载可写配置目录，`ISSUE_WATCH_CONFIG` 指向 `/app/config/config.toml`。管理页面保存与宿主机编辑器的原子替换都能被热加载识别。目录和文件须允许容器运行用户写入；不要只挂载单个配置文件。
 
 ## Docker
 
 生产环境的 GitHub Actions 镜像发布、首次迁移和恢复步骤见 [自动构建与部署](docs/deployment.md)。生产部署保留宿主机回环健康端口 8081，本地 Compose 的默认端口仍为 8080。
 
-复制配置示例并填写仓库，然后通过环境变量提供凭据：
+将配置放入 `config` 目录并填写仓库，然后通过环境变量提供凭据：
 
 ```powershell
-Copy-Item config.example.toml config.toml
+New-Item -ItemType Directory -Force config
+Copy-Item config.example.toml config/config.toml
 docker compose up -d --build
 ```
 
-Compose 将 `./data` 挂载为持久化目录；不要把 `.env.local` 复制进镜像。
+Compose 将 `./data` 挂载为持久化目录；不要把 `.env.local` 复制进镜像。已有本地 Compose 部署先停止容器，把原 `config.toml` 复制到 `config/config.toml`（已有目标文件时先确认并备份），再按新 Compose 重新创建容器；原生运行仍默认读取根目录的 `config.toml`。
 
 ## 健康状态网页
 
-程序默认提供只读网页 `http://127.0.0.1:8080/`，状态接口为 `/api/status`。通过环境变量 `ISSUE_WATCH_HEALTH_BIND` 设置监听地址（原生运行默认 `127.0.0.1:8080`，改变后需重启）。启动日志中的 `health dashboard listening` 表示监听成功；端口占用或监听地址无效会使启动失败，请更换端口并重新启动。
+程序默认提供健康与管理网页 `http://127.0.0.1:8080/`，只读状态接口为 `/api/status`。通过环境变量 `ISSUE_WATCH_HEALTH_BIND` 设置监听地址（原生运行默认 `127.0.0.1:8080`，改变后需重启）。启动日志中的 `health dashboard listening` 表示监听成功；端口占用或监听地址无效会使启动失败，请更换端口并重新启动。
 
 Docker Compose 在容器内部监听 `0.0.0.0:8080`，宿主机只发布到 `127.0.0.1:8080`，不向公网开放。宿主机端口冲突时设置 `ISSUE_WATCH_HEALTH_PORT` 后重新创建容器；此变量只影响宿主机端口。请保留回环地址限制，不将发布地址改成 `0.0.0.0`。
 
@@ -61,7 +62,19 @@ ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:18080:127.0.0.1:8080 user@server
 
 断开隧道或暂时不可达时，已打开页面保留上次数据及时间，整体状态改为未知并显示断连提示；恢复后自动刷新。不可达无法直接区分程序退出、服务器断网和隧道断开。服务器不可达时新打开页面可能直接显示浏览器连接错误。
 
-第一版不提供更改配置、重试通知、重启操作、主动测试消息、资源监控或历史趋势。QQ token 自动刷新仍未实现，网页只反映已知鉴权结果。
+页面支持管理广播接收者、共享监控仓库和轮询间隔，不提供手动重试通知、重启操作、主动测试消息、资源监控或历史趋势。
+
+## 管理操作
+
+通过上述本机地址或 SSH 隧道进入原健康页面。页面没有公网登录入口，写接口要求本机同来源请求，不应将监听端口向公网发布。接收者列表每 10 秒刷新，配置每 2 秒刷新；编辑中的间隔和备注草稿不会被自动刷新清空。
+
+广播接收者可以由管理员填写当前机器人的 `user_openid` 添加，也可以自行 `/bind`。QQ 号备注选填，可修改和清空、不要求唯一、不参与发送。重复添加不覆盖原备注；添加订阅本身不验证 QQ 平台主动发送权限。移除订阅取消未发送通知并删除备注，已经发出的请求仍可能送达；对方可重新 `/bind`，重新加入不恢复原备注和积压。
+
+仓库使用 `owner/name` 格式，不允许重复或移除最后一个仓库。首次添加只建立当前时间基线；移除停止后续轮询，已有通知继续投递；重新添加恢复进度并补发停用期间的新建 Issue。
+
+轮询间隔为 1–86400 秒的整数。页面修改写回同一份 TOML 配置，重启后保留。页面区分“已保存，等待热加载”“热加载已接受，等待当前任务结束”和“监控任务已采用”；保存失败或加载失败明确提示。外部编辑文件或其他页面提交后，过期提交被拒绝，刷新配置后再修改。配置文件无效时须先修正文件，管理接口不会用旧值覆盖它。页面保存会重新格式化 TOML，保留配置值，不保留原注释。
+
+管理接口为 `GET/POST /api/admin/subscriptions`、`PATCH/DELETE /api/admin/subscriptions/{订阅编号}` 和 `GET/PATCH /api/admin/config`。写请求携带同来源 `Origin` 与 `X-Issue-Watch-Admin: 1`，JSON 请求还需 `Content-Type: application/json`；配置提交必须携带读取时的 `version`。QQ 号不能替代 `user_openid`；API 结果和页面都不会暴露环境变量凭据。
 
 部署验收：先在服务器访问 `http://127.0.0.1:8080/api/status`，检查 Compose 发布地址是 `127.0.0.1`；再按上面的命令建立隧道，在本地查看页面。断开隧道，等待下一次刷新确认未知提示；重新建立隧道确认自动恢复。使用 `docker compose logs issue-watch` 排查启动错误，使用 `docker compose port issue-watch 8080` 查看发布地址。服务状态读取不发送 QQ 消息。
 

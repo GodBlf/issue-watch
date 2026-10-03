@@ -11,5 +11,5 @@ services:
     ports:
       - "127.0.0.1:8081:8080"
     volumes:
-      - ${ISSUE_WATCH_ROOT:-/home/godblf/issue-watch}/config:/app/config:ro
+      - ${ISSUE_WATCH_ROOT:-/home/godblf/issue-watch}/config:/app/config
       - ${ISSUE_WATCH_ROOT:-/home/godblf/issue-watch}/data:/app/data

@@ -6,11 +6,11 @@ services:
       - "127.0.0.1:${ISSUE_WATCH_HEALTH_PORT:-8080}:8080"
     environment:
       ISSUE_WATCH_HEALTH_BIND: 0.0.0.0:8080
-      ISSUE_WATCH_CONFIG: /app/config.toml
+      ISSUE_WATCH_CONFIG: /app/config/config.toml
       QQ_APP_ID: ${QQ_APP_ID}
       QQ_APP_SECRET: ${QQ_APP_SECRET}
       QQ_ACCESS_TOKEN: ${QQ_ACCESS_TOKEN}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     volumes:
-      - ./config.toml:/app/config.toml:ro
+      - ./config:/app/config
       - ./data:/app/data

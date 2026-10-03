@@ -34,7 +34,7 @@ jobs:
         run: |
           cargo +1.90.0 fmt --check
           cargo +1.90.0 test --locked
-          node --test tests/health_dashboard_browser.cjs
+          node --test tests/health_dashboard_browser.cjs tests/admin_management_browser.cjs
           python3 -m unittest discover -s tests -p test_deploy.py -v
           bash -n deploy/install.sh
           sh -n deploy/ssh-entry

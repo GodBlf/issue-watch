@@ -6,14 +6,32 @@
 <style>
 :root{font:16px/1.6 system-ui,sans-serif;color:#183047;background:#eff3f6}body{max-width:1000px;margin:40px auto;padding:0 20px}h1{margin-bottom:8px}header p{color:#526779}section{background:white;border:1px solid #d7e1e8;border-radius:12px;padding:24px;margin:20px 0}#status{font-size:30px;font-weight:700}#connection{background:#fff2d0;border-left:4px solid #b78215;padding:12px}dl{display:grid;grid-template-columns:140px 1fr;gap:8px}dd{margin:0;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}small{color:#526779}.component{border-top:1px solid #e4e9ed;padding:12px 0}.status-normal{color:#18724d}.status-warning{color:#976109}.status-error{color:#b32626}.status-unknown{color:#526779}h2{font-size:20px}h3{font-size:17px}
 </style>
+<style>
+form{display:flex;flex-wrap:wrap;gap:12px;align-items:end}label{display:flex;flex-direction:column;gap:4px;font-size:14px}input,button{font:inherit;padding:8px 12px;border:1px solid #bbcbd7;border-radius:6px;max-width:100%;box-sizing:border-box}input{background:#fff;color:#183047}button{background:#e8f0f7;color:#183047;cursor:pointer}button:disabled{opacity:.5;cursor:wait}button:focus-visible,input:focus-visible{outline:3px solid #619ace}#subscriptions p,#repositories p{overflow-wrap:anywhere}[role=status]{white-space:pre-wrap;overflow-wrap:anywhere}nav a{margin-right:16px}
+</style>
 </head>
 <body>
-<header><h1>Issue 监控健康状态</h1><p>本次运行的状态 · 每 10 秒自动刷新 · 只读</p></header>
+<header><h1>Issue 监控健康状态</h1><p>本次运行的状态 · 每 10 秒自动刷新 · 本机管理员入口</p></header>
 <p id="connection" role="alert" hidden></p>
+<nav aria-label="页面区域"><a href="#subscription-management">广播接收者</a><a href="#configuration-management">监控配置</a></nav>
 <section aria-live="polite"><small>整体状态</small><div id="status" class="status-unknown">未知</div>
 <dl><dt>数据更新时间</dt><dd id="updated">尚无数据</dd><dt>启动时间</dt><dd id="started">未知</dd><dt>运行时长</dt><dd id="uptime">未知</dd></dl></section>
 <p id="reasons"></p>
 <section><h2>业务观察</h2><div id="components">尚无检查结果，等待业务观察。</div></section>
+<section id="subscription-management"><h2>广播接收者</h2>
+<p>所有接收者共享监控仓库。发送使用当前机器人的 user_openid，QQ 号仅作备注。保存订阅不代表已验证发送权限。</p>
+<form id="add-subscription"><label>user_openid <input name="user_openid" required maxlength="256" autocomplete="off"></label>
+<label>QQ 号备注（选填） <input name="qq_number_note" maxlength="256" autocomplete="off"></label><button>添加接收者</button></form>
+<p id="subscription-message" role="status" aria-live="polite"></p><div id="subscriptions">正在加载接收者…</div></section>
+<section id="configuration-management"><h2>监控配置</h2>
+<p id="configuration-stage" role="status" aria-live="polite">正在读取配置…</p>
+<form id="poll-interval"><label>轮询间隔（秒，1–86400） <input name="seconds" type="number" min="1" max="86400" step="1" required disabled></label><button disabled>保存间隔</button></form>
+<button id="reload-configuration" type="button">刷新配置／放弃未保存的间隔</button>
+<p id="configuration-message" role="status" aria-live="polite"></p>
+<h3>共享监控仓库</h3><p>首次添加不发送历史 Issue；重新添加曾监控的仓库会恢复原进度，补发停用期间的新建 Issue。移除后已有通知继续投递。至少保留一个仓库。</p>
+<form id="add-repository"><label>监控仓库（owner/name） <input name="repository" required maxlength="256" placeholder="owner/name" autocomplete="off"></label><button disabled>添加仓库</button></form>
+<div id="repositories">正在加载仓库…</div>
+</section>
 <small>连接失败仅表示网页暂时无法取得状态，不能确定程序、服务器或 SSH 隧道的具体情况。服务器不可达时，新打开页面可能直接显示浏览器连接错误。时间使用 UTC。</small>
 <script>
 const labels = {normal:'正常',warning:'警告',error:'异常',unknown:'未知'};
@@ -71,5 +89,6 @@ async function refresh() {
 refresh();
 setInterval(refresh,10000);
 </script>
+<script src="/admin.js" defer></script>
 </body>
 </html>

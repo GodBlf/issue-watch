@@ -1,4 +1,6 @@
+pub mod admin;
 pub mod config;
+pub mod config_management;
 pub mod github;
 pub mod github_health;
 pub mod model;

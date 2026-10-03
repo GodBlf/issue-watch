@@ -33,8 +33,10 @@ async fn main() -> Result<()> {
     let health_listener = tokio::net::TcpListener::bind(&health_bind).await?;
     info!(address = %health_listener.local_addr()?, "health dashboard listening");
     let health_server = health.clone();
+    let admin = issue_watch::admin::Admin::with_active(&config_path, &config.file, health.clone())?;
+    let config_management = admin.config.clone();
     tokio::spawn(async move {
-        if let Err(error) = issue_watch::health::serve(health_listener, health_server).await {
+        if let Err(error) = issue_watch::admin::serve(health_listener, health_server, admin).await {
             warn!(%error, "health dashboard stopped");
         }
     });
@@ -116,10 +118,11 @@ async fn main() -> Result<()> {
     let mut active = config.file.clone();
     let (updates, mut changes) = tokio::sync::watch::channel(active.clone());
     let watcher_store = Store::open(&active.database_path)?;
-    tokio::spawn(issue_watch::reload::watch_config(
+    tokio::spawn(issue_watch::reload::watch_config_managed(
         issue_watch::reload::ConfigReloader::new(&config_path, active.clone()),
         watcher_store,
         updates,
+        Some(config_management.clone()),
     ));
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(
         config.file.poll_interval_seconds,
@@ -129,6 +132,7 @@ async fn main() -> Result<()> {
             issue_watch::reload::next_monitoring_event(&mut interval, &mut changes).await?
         {
             active = updated;
+            config_management.applied(&active);
             health.set_poll_interval(active.poll_interval_seconds);
             github_health.sync_repositories(&active.repositories);
             interval =

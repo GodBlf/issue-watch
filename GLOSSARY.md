@@ -19,6 +19,9 @@ _Avoid_: 修复任务、PR 通知
 **通知目标（Notification Destination）**：接收 issue 通知的 QQ 会话。
 _Avoid_: 监控仓库、消息来源
 
+**QQ 号备注（QQ Number Note）**：管理员为当前广播订阅选填的 QQ 号，用于人工识别接收者，不作为通知投递的身份或地址；随订阅退出而删除。
+_Avoid_: 发送目标、绑定凭据
+
 **广播订阅（Broadcast Subscription）**：通知目标加入共享 Issue 通知的关系；所有订阅者关注相同的监控仓库。
 _Avoid_: 用户配置、独立监控
 
