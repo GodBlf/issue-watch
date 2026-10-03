@@ -1,0 +1,4 @@
+interface:
+  display_name: "Issue-watch Config Hot Reload"
+  short_description: "Hot-load a GitHub repository on a target server"
+  default_prompt: "Use $issue-watch-config-hot-reload to hot-load a specified GitHub repository on a specified SSH server."
