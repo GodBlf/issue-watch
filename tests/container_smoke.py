@@ -71,6 +71,8 @@ def main():
             assert database.exists()
             replacement = config.with_suffix(".tmp")
             replacement.write_text(config.read_text().replace("owner/repository", "owner/another"))
+            os.chmod(replacement, 0o600)
+            os.chown(replacement, 1000, 1000)
             replacement.replace(config)
             wait_for(lambda status: "owner/another" in json.dumps(status))
 
