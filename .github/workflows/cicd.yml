@@ -2,8 +2,16 @@ name: CI and deploy
 
 on:
   pull_request:
+    paths-ignore:
+      - 'README.md'
+      - 'roadmap.md'
+      - 'docs/**'
   push:
     branches: [master]
+    paths-ignore:
+      - 'README.md'
+      - 'roadmap.md'
+      - 'docs/**'
 
 permissions:
   contents: read
