@@ -7,6 +7,8 @@ use std::{env, fs, path::Path};
 pub struct FileConfig {
     #[serde(default = "default_poll_interval")]
     pub poll_interval_seconds: u64,
+    #[serde(default = "default_tracking_interval")]
+    pub tracking_interval_seconds: u64,
     pub repositories: Vec<String>,
     #[serde(default = "default_database_path")]
     pub database_path: String,
@@ -14,6 +16,9 @@ pub struct FileConfig {
 
 fn default_poll_interval() -> u64 {
     60
+}
+fn default_tracking_interval() -> u64 {
+    300
 }
 fn default_database_path() -> String {
     "data/issue-watch.sqlite3".to_string()
@@ -53,6 +58,10 @@ impl FileConfig {
     pub fn parse(content: &str) -> Result<Self> {
         let file: Self = toml::from_str(content).context("parse TOML config")?;
         validate_repositories(&file.repositories)?;
+        anyhow::ensure!(
+            (1..=86400).contains(&file.tracking_interval_seconds),
+            "tracking interval must be between 1 and 86400 seconds"
+        );
         anyhow::ensure!(
             file.poll_interval_seconds > 0,
             "poll interval must be greater than zero"

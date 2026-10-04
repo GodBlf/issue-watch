@@ -312,6 +312,7 @@ async fn startup_edits_do_not_redirect_management_to_another_database_or_fake_ap
     let original_database = directory.path().join("original.sqlite3");
     let redirected_database = directory.path().join("redirected.sqlite3");
     let original = issue_watch::config::FileConfig {
+        tracking_interval_seconds: 300,
         poll_interval_seconds: 60,
         repositories: vec!["owner/repo".into()],
         database_path: original_database.to_str().unwrap().into(),

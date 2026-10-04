@@ -18,7 +18,7 @@ pub struct Subscription {
 }
 
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
     health: Option<crate::health::Health>,
 }
 
@@ -48,6 +48,7 @@ impl Store {
             rusqlite::TransactionBehavior::Immediate,
         )?;
         self.conn.execute_batch("CREATE TABLE IF NOT EXISTS monitored_repositories (name TEXT PRIMARY KEY, baseline TEXT, cursor TEXT); CREATE TABLE IF NOT EXISTS issue_notifications (repository TEXT NOT NULL, number INTEGER NOT NULL, title TEXT NOT NULL, author TEXT NOT NULL, created_at TEXT NOT NULL, url TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, last_error TEXT, PRIMARY KEY(repository, number)); CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")?;
+        self.init_tracking()?;
         // Old rows intentionally retain NULL timestamps; Issue creation is not enqueue/send time.
         let mut columns = self
             .conn
@@ -269,15 +270,16 @@ impl Store {
     }
     pub fn notification_summary(&self) -> Result<serde_json::Value> {
         let count = |state: &str| -> Result<u64> {
-            Ok(self.conn.query_row(
+            Ok(self.conn.query_row::<u64, _, _>(
                 "SELECT COUNT(*) FROM notification_deliveries WHERE state=?1",
                 [state],
                 |row| row.get(0),
-            )?)
+            )? + self.tracking_queue_count(state)?)
         };
         // Subscription IDs distinguish recipients without publishing their QQ OpenIDs.
         let mut statement=self.conn.prepare("SELECT subscription_id,repository,number,state,last_error,enqueued_at,sent_at FROM notification_deliveries WHERE state IN ('retry','permanent_failure') ORDER BY repository,number,subscription_id")?;
-        let failures=statement.query_map([],|row| Ok(serde_json::json!({"subscription_id":row.get::<_,i64>(0)?,"repository":row.get::<_,String>(1)?,"number":row.get::<_,u64>(2)?,"state":row.get::<_,String>(3)?,"error":row.get::<_,Option<String>>(4)?,"enqueued_at":row.get::<_,Option<String>>(5)?,"sent_at":row.get::<_,Option<String>>(6)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut failures=statement.query_map([],|row| Ok(serde_json::json!({"subscription_id":row.get::<_,i64>(0)?,"repository":row.get::<_,String>(1)?,"number":row.get::<_,u64>(2)?,"state":row.get::<_,String>(3)?,"error":row.get::<_,Option<String>>(4)?,"enqueued_at":row.get::<_,Option<String>>(5)?,"sent_at":row.get::<_,Option<String>>(6)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        failures.extend(self.tracking_delivery_failures()?);
         Ok(
             serde_json::json!({"pending":count("pending")?,"retrying":count("retry")?,"permanent_failed":count("permanent_failure")?,"failures":failures}),
         )
@@ -327,6 +329,7 @@ impl Store {
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
+        self.conn.execute(&format!("UPDATE tracking_deliveries SET state='cancelled',next_attempt_at=NULL WHERE subscription_id IN (SELECT id FROM broadcast_subscriptions WHERE {column}=?1) AND state IN ('pending','retry','permanent_failure')"), [&identity])?;
         self.conn.execute(
             &format!(
                 "UPDATE notification_deliveries SET state='cancelled',next_attempt_at=NULL

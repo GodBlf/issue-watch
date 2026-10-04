@@ -16,6 +16,7 @@ Rust 服务，按配置轮询 GitHub 公开仓库的新建 Issue，并通过 QQ 
 
 ```toml
 poll_interval_seconds = 60
+tracking_interval_seconds = 300
 database_path = "data/issue-watch.sqlite3"
 repositories = ["GodBlf/mycode-rust", "owner/another-repo"]
 ```
@@ -98,3 +99,24 @@ ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:18080:127.0.0.1:8080 user@server
 cargo fmt --check
 cargo test
 ```
+
+
+## Issue 追踪与后台管理
+
+后台按概览、仓库、广播接收者、用户权限和设置分开导航；仓库详情中可用完整 Issue URL 添加共享追踪、查看检查时间及异常、取消追踪。列表支持搜索和分页，表单明确保存，自动刷新保留未保存输入。移除仓库前显示当前追踪数量；配置被接受后取消该仓库的追踪与待发送动态，原有新建 Issue 通知继续投递。
+
+Issue 追踪需要配置 `GITHUB_TOKEN`：GitHub GraphQL 时间线用于识别评论、跨仓库引用、明确关联 PR，以及关联 PR 的合并、关闭和重新打开。Token 必须能读取目标仓库及需要关注的关联仓库；无法访问的私有引用和未被 GitHub 识别的文本提及不保证发现。新增追踪不补发历史，追踪数量不设上限；大量追踪可能受到 GitHub 配额限制，查询失败会显示异常并在下一轮重试。
+
+QQ 私聊命令：
+
+- `/track https://github.com/owner/repo/issues/123` 添加共享追踪。
+- `/untrack https://github.com/owner/repo/issues/123` 取消共享追踪，影响所有接收者。
+- `/tracking` 查询共享清单；`/tracking https://github.com/owner/repo` 按仓库查询。仓库 URL 的 `?page=2` 查询参数用于后续页。
+
+所有 QQ 用户默认没有修改权限，不设 QQ 管理员角色；后台按 `user_openid` 分别授予添加和取消权限，包括未订阅用户。广播订阅者或拥有任一修改权限的用户可查询。退出广播不删除权限，撤销权限不取消已有追踪；无权限回复“权限不足：你没有执行此命令的权限，请联系后台管理人员。”。Issue 不存在回复“该 Issue 不存在”。
+
+`tracking_interval_seconds` 默认 300，范围 1–86400 秒，在后台设置中独立修改并热加载，不改变新建 Issue 轮询间隔。启动时执行一次恢复检查，随后按独立间隔检查；无变化不通知，同轮动态按 Issue 合并摘要，发现时确定广播接收者。动态不经过新建 Issue 筛选规则，无订阅者时也检查，不向后来加入者补发。查询或服务故障恢复后补查并去重，投递按接收者分别保存和重试。
+
+追踪开始后的关闭事件自动结束并从当前列表清理，包括未计划处理，以及两轮之间关闭后重新打开的情况。保留最后一批动态和关闭通知供重试；重新打开需重新添加。人工取消撤销该次追踪未发送通知，已经发出的请求可能送达，再次添加不恢复旧积压。
+
+新增管理接口：`GET/POST /api/admin/tracking`、`DELETE /api/admin/tracking/{追踪编号}`、`GET /api/admin/permissions`、`PUT /api/admin/permissions/{user_openid}`。写入沿用本机同源校验；授权正文为 `can_add`、`can_cancel` 两个布尔值。配置接口支持独立的 `tracking_interval_seconds` 字段，仍必须携带配置版本。

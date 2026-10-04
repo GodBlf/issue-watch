@@ -33,6 +33,7 @@ pub struct ConfigSnapshot {
 pub struct ConfigEdit {
     pub version: String,
     pub poll_interval_seconds: Option<u64>,
+    pub tracking_interval_seconds: Option<u64>,
     pub repositories: Option<Vec<String>>,
 }
 pub enum SaveError {
@@ -94,11 +95,17 @@ impl ConfigManagement {
                 "数据库路径变更需要重启，请先恢复当前配置".into(),
             ));
         }
-        if edit.poll_interval_seconds.is_none() && edit.repositories.is_none() {
+        if edit.poll_interval_seconds.is_none()
+            && edit.tracking_interval_seconds.is_none()
+            && edit.repositories.is_none()
+        {
             return Err(SaveError::Invalid("未提供要修改的配置".into()));
         }
         if let Some(interval) = edit.poll_interval_seconds {
             candidate.poll_interval_seconds = interval;
+        }
+        if let Some(interval) = edit.tracking_interval_seconds {
+            candidate.tracking_interval_seconds = interval;
         }
         if let Some(repositories) = edit.repositories {
             candidate.repositories = repositories;
@@ -153,6 +160,7 @@ impl ConfigManagement {
 }
 fn equivalent(left: &FileConfig, right: &FileConfig) -> bool {
     left.poll_interval_seconds == right.poll_interval_seconds
+        && left.tracking_interval_seconds == right.tracking_interval_seconds
         && left.database_path == right.database_path
         && left.repositories.len() == right.repositories.len()
         && left
@@ -177,7 +185,7 @@ impl Inner {
     fn snapshot(&mut self) -> ConfigSnapshot {
         let saved = self
             .read()
-            .and_then(|bytes| Ok(FileConfig::parse(std::str::from_utf8(&bytes)?)?));
+            .and_then(|bytes| FileConfig::parse(std::str::from_utf8(&bytes)?));
         let (saved, error) = match saved {
             Ok(saved) => (Some(saved), self.error.clone()),
             Err(_) => (
