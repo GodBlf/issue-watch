@@ -187,6 +187,20 @@ async fn gateway_replies_to_commands_without_blocking_heartbeats_or_losing_bindi
         .send(event("rebind-alice", "alice", "/bind"))
         .unwrap();
     assert_eq!(receive(&mut received).await.1["content"], "success");
+    commands
+        .send(event(
+            "track-denied",
+            "alice",
+            "/track https://github.com/owner/repo/issues/12",
+        ))
+        .unwrap();
+    let (_, reply) = receive(&mut received).await;
+    assert_eq!(reply["msg_id"], "track-denied");
+    assert_eq!(
+        reply["content"],
+        "权限不足：你没有执行此命令的权限，请联系后台管理人员。"
+    );
+    receive(&mut heartbeat_rx).await;
     drop(commands);
     timeout(Duration::from_secs(3), gateway)
         .await

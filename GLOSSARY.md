@@ -1,6 +1,6 @@
 # Issue 监控
 
-本项目为自行部署的使用者监控 GitHub 仓库，并通过 QQ 机器人发送新建 issue 通知。
+本项目为自行部署的使用者监控 GitHub 仓库及指定 Issue，并通过 QQ 机器人广播新建 Issue 与追踪动态。
 
 ## Language
 
@@ -27,3 +27,12 @@ _Avoid_: 用户配置、独立监控
 
 **通知投递（Notification Delivery）**：一条 Issue 通知向一个通知目标的发送及其结果。
 _Avoid_: Issue 处理状态、广播结果
+
+**Issue 追踪（Issue Tracking）**：持续关注指定 Issue 的新动态，并向所有广播订阅者通知的共享关系；取消追踪或 Issue 关闭时结束。
+_Avoid_: 广播订阅、监控仓库、个人关注
+
+**Issue 动态（Issue Activity）**：被追踪 Issue 的新评论、其他 Issue 或 PR 对它的引用、PR 与它的明确关联，以及它的关闭；也包括明确关联 PR 的合并、关闭和重新打开。
+_Avoid_: 新建 Issue、仓库全部动态
+
+**追踪命令权限（Tracking Command Permission）**：允许指定 QQ 用户添加或取消共享 Issue 追踪的授权；添加与取消分别授予，与广播订阅无关。
+_Avoid_: QQ 管理员角色、广播订阅权限

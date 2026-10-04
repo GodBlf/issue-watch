@@ -224,6 +224,38 @@ async fn gateway(
                                 .and_then(|v| v.as_str())
                                 .filter(|id| !id.is_empty());
                             if let (Some(openid), Some(message_id)) = (openid, message_id) {
+                                if matches!(
+                                    content.split_whitespace().next(),
+                                    Some("/track" | "/untrack" | "/tracking")
+                                ) {
+                                    let database_path = database_path.to_owned();
+                                    let content = content.to_owned();
+                                    let openid = openid.to_owned();
+                                    let message_id = message_id.to_owned();
+                                    let sender = sender.clone();
+                                    tokio::spawn(async move {
+                                        let outcome: Result<()> = async {
+                                            let mut store = Store::open(&database_path)?;
+                                            let source =
+                                                crate::tracking::GithubTrackingSource::new(
+                                                    std::env::var("GITHUB_TOKEN").ok(),
+                                                )?;
+                                            if let Some(reply) = crate::tracking::tracking_command(
+                                                &mut store, &source, &content, &openid,
+                                            )
+                                            .await?
+                                            {
+                                                sender.reply(&openid, &reply, &message_id).await?;
+                                            }
+                                            Ok(())
+                                        }
+                                        .await;
+                                        if let Err(error) = outcome {
+                                            tracing::warn!(%error,"QQ tracking command failed");
+                                        }
+                                    });
+                                    continue;
+                                }
                                 match crate::qq::private_command(&store, content, openid) {
                                     Ok(Some(reply)) => {
                                         if let Some(health) = health {

@@ -17,7 +17,7 @@ class Element {
 const settle = async () => { for(let i=0;i<5;i++) await new Promise(setImmediate); };
 function setup() {
   const elements=new Map(); const byId=id=> { if(!elements.has(id)) elements.set(id,new Element()); return elements.get(id); };
-  for(const [id,names] of [['add-subscription',['user_openid','qq_number_note']],['poll-interval',['seconds']],['add-repository',['repository']]]) {
+  for(const [id,names] of [['add-subscription',['user_openid','qq_number_note']],['poll-interval',['seconds']],['tracking-interval',['seconds']],['add-repository',['repository']]]) {
     const form=byId(id); for(const name of names) { form.elements[name]=new Element('input'); form.append(form.elements[name]); } form.append(new Element('button'));
   }
   const requests=[], intervals=[]; let rows=[], config={version:'v1',stage:'applied',error:null,saved:{repositories:['owner/repo'],poll_interval_seconds:60},applied:{repositories:['owner/repo'],poll_interval_seconds:60}};
@@ -25,7 +25,7 @@ function setup() {
   const sandbox={document:{getElementById:byId,createElement:tag=>new Element(tag),activeElement:null},AbortSignal:{timeout:()=>({})},confirm:()=>allowConfirm,setInterval:(fn,ms)=>intervals.push({fn,ms}),fetch:async(path,options)=>{
     requests.push({path,...options}); let data;
     if(options.method!=='GET' && pendingGate) await pendingGate;
-    if(path.endsWith('/config')) {
+    if(path.endsWith('/tracking')) { data=[]; } else if(path.endsWith('/config')) {
       if(options.method==='PATCH') { const body=JSON.parse(options.body); if(body.version!==config.version) return {ok:false,json:async()=>({error:'配置已变化，请刷新'})}; config={...config,version:'v2',stage:'saved',saved:{...config.saved,...body}}; }
       data=config;
     } else if(options.method==='POST') { const body=JSON.parse(options.body); rows.push({id:1,...body}); data={added:true}; }
@@ -74,11 +74,11 @@ test('administrator adds and removes a shared watched repository and cannot remo
   assert.ok(update,'repository form must save a configuration');
   assert.deepEqual(JSON.parse(update.body).repositories,['owner/repo','owner/another']);
   assert.match(ui.byId('configuration-stage').textContent,/等待热加载/);
-  let remove=ui.byId('repositories').querySelectorAll('button')[0];
+  let remove=ui.byId('repositories').querySelectorAll('button').find(button=>button.textContent==='移除仓库');
   ui.setConfirm(false); await remove.fire('click'); assert.equal(ui.requests.filter(request=>request.method==='PATCH').length,1);
   ui.setConfirm(true); await remove.fire('click');
   assert.deepEqual(JSON.parse(ui.requests.filter(request=>request.method==='PATCH')[1].body).repositories,['owner/another']);
-  assert.equal(ui.byId('repositories').querySelectorAll('button')[0].disabled,true);
+  assert.equal(ui.byId('repositories').querySelectorAll('button').find(button=>button.textContent==='移除仓库').disabled,true);
 });
 
 test('repository changes preserve an unsaved polling interval and require a refresh before submitting that stale draft',async()=>{
@@ -91,4 +91,12 @@ test('repository changes preserve an unsaved polling interval and require a refr
   assert.match(ui.byId('configuration-message').textContent,/刷新/);
   await ui.byId('reload-configuration').fire('click');
   assert.equal(interval.value,60);
+});
+
+
+test('tracking interval is saved independently from new issue polling', async()=>{
+  const ui=setup(); await settle();
+  const form=ui.byId('tracking-interval');form.elements.seconds.value='90';await form.elements.seconds.fire('input');await form.fire();
+  const body=JSON.parse(ui.requests.filter(r=>r.method==='PATCH').at(-1).body);
+  assert.equal(body.tracking_interval_seconds,90);assert.equal(body.poll_interval_seconds,undefined);
 });

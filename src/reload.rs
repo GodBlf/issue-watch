@@ -34,6 +34,7 @@ impl ConfigReloader {
         if candidate == self.active {
             return Ok(false);
         }
+        store.set_tracking_repositories(&candidate.repositories)?;
         self.active = candidate;
         Ok(true)
     }
@@ -52,6 +53,58 @@ pub async fn next_monitoring_event(
         }
         _ = interval.tick() => Ok(None),
     }
+}
+
+pub enum MonitoringEvent {
+    Configuration(FileConfig),
+    Poll,
+    Tracking,
+}
+pub struct MonitoringSchedule {
+    config: FileConfig,
+    poll: tokio::time::Interval,
+    tracking: tokio::time::Interval,
+}
+impl MonitoringSchedule {
+    pub fn new(config: &FileConfig) -> Self {
+        let mut poll =
+            tokio::time::interval(std::time::Duration::from_secs(config.poll_interval_seconds));
+        let mut tracking = tokio::time::interval(std::time::Duration::from_secs(
+            config.tracking_interval_seconds,
+        ));
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        tracking.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        Self {
+            config: config.clone(),
+            poll,
+            tracking,
+        }
+    }
+    pub fn apply(&mut self, config: &FileConfig) {
+        if config.poll_interval_seconds != self.config.poll_interval_seconds {
+            self.poll = delayed_interval(config.poll_interval_seconds);
+        }
+        if config.tracking_interval_seconds != self.config.tracking_interval_seconds {
+            self.tracking = delayed_interval(config.tracking_interval_seconds);
+        }
+        self.config = config.clone();
+    }
+    pub async fn next(
+        &mut self,
+        changes: &mut tokio::sync::watch::Receiver<FileConfig>,
+    ) -> Result<MonitoringEvent> {
+        tokio::select! {biased;
+            result=changes.changed()=>{result?;Ok(MonitoringEvent::Configuration(changes.borrow_and_update().clone()))},
+            _=self.poll.tick()=>Ok(MonitoringEvent::Poll),
+            _=self.tracking.tick()=>Ok(MonitoringEvent::Tracking),
+        }
+    }
+}
+fn delayed_interval(seconds: u64) -> tokio::time::Interval {
+    let duration = std::time::Duration::from_secs(seconds);
+    let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + duration, duration);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    interval
 }
 
 /// Watches file contents rather than metadata so atomic editor saves are detected.

@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
         }
     });
     eprintln!("Opening monitoring database");
-    let store = Store::open(&config.file.database_path)?.with_health(health.clone())?;
+    let mut store = Store::open(&config.file.database_path)?.with_health(health.clone())?;
     let qq_health = issue_watch::qq_health::QqHealth::new(health.clone());
     qq_health.refresh_queue(&store)?;
     for repository in &config.file.repositories {
@@ -124,35 +124,67 @@ async fn main() -> Result<()> {
         updates,
         Some(config_management.clone()),
     ));
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-        config.file.poll_interval_seconds,
-    ));
+    let tracking_source =
+        issue_watch::tracking::GithubTrackingSource::new(config.github_token.clone())?;
+    let mut schedule = issue_watch::reload::MonitoringSchedule::new(&active);
     loop {
-        if let Some(updated) =
-            issue_watch::reload::next_monitoring_event(&mut interval, &mut changes).await?
-        {
-            active = updated;
-            config_management.applied(&active);
-            health.set_poll_interval(active.poll_interval_seconds);
-            github_health.sync_repositories(&active.repositories);
-            interval =
-                tokio::time::interval(std::time::Duration::from_secs(active.poll_interval_seconds));
-            continue;
-        }
-        for repository in &active.repositories {
-            match github_health.poll(&github, &store, repository).await {
-                Ok(count) => info!(repository, discovered = count, "GitHub poll complete"),
-                Err(error) => warn!(repository, %error, "GitHub poll failed"),
+        match schedule.next(&mut changes).await? {
+            issue_watch::reload::MonitoringEvent::Configuration(updated) => {
+                schedule.apply(&updated);
+                active = updated;
+                config_management.applied(&active);
+                health.set_poll_interval(active.poll_interval_seconds);
+                github_health.sync_repositories(&active.repositories);
+                continue;
             }
-            qq_health.refresh_queue(&store)?;
+            issue_watch::reload::MonitoringEvent::Poll => {
+                for repository in &active.repositories {
+                    match github_health.poll(&github, &store, repository).await {
+                        Ok(count) => info!(repository, discovered = count, "GitHub poll complete"),
+                        Err(error) => warn!(repository,%error,"GitHub poll failed"),
+                    }
+                    qq_health.refresh_queue(&store)?;
+                }
+            }
+            issue_watch::reload::MonitoringEvent::Tracking => {
+                match issue_watch::tracking::check_tracked(&mut store, &tracking_source).await {
+                    Ok(count) => info!(activities = count, "Issue tracking check complete"),
+                    Err(error) => warn!(%error,"Issue tracking check failed"),
+                }
+                let issues = store.tracked_issues()?;
+                let errors: Vec<_> = issues
+                    .iter()
+                    .filter(|issue| issue.error.is_some())
+                    .collect();
+                health.observe(
+                    "issue_tracking",
+                    if errors.is_empty() {
+                        issue_watch::health::HealthStatus::Normal
+                    } else {
+                        issue_watch::health::HealthStatus::Warning
+                    },
+                    serde_json::json!({"active":issues.len(),"errors":errors}),
+                );
+                qq_health.refresh_queue(&store)?;
+            }
         }
         if let Some(sender) = &sender {
             if let Err(error) = deliver_pending_observed(&store, sender.as_ref(), &qq_health).await
             {
-                warn!(%error, "notification delivery failed");
+                warn!(%error,"notification delivery failed");
             }
+            if let Err(error) = issue_watch::tracking::deliver_tracking_observed(
+                &store,
+                sender.as_ref(),
+                &qq_health,
+            )
+            .await
+            {
+                warn!(%error,"tracking delivery failed");
+            }
+            qq_health.refresh_queue(&store)?;
         } else {
-            warn!("QQ_ACCESS_TOKEN is not configured; notifications remain queued");
+            warn!("QQ access token unavailable; notifications remain queued");
         }
     }
 }

@@ -18,6 +18,7 @@ use std::{
 pub struct Admin {
     store: Arc<Mutex<Store>>,
     pub config: crate::config_management::ConfigManagement,
+    tracking_source: Arc<dyn crate::tracking::TrackingSource>,
 }
 impl Admin {
     pub fn new(config_path: impl AsRef<Path>, health: Health) -> anyhow::Result<Self> {
@@ -29,12 +30,22 @@ impl Admin {
         active: &FileConfig,
         health: Health,
     ) -> anyhow::Result<Self> {
+        let store = Store::open(&active.database_path)?.with_health(health)?;
+        store.set_tracking_repositories(&active.repositories)?;
         Ok(Self {
-            store: Arc::new(Mutex::new(
-                Store::open(&active.database_path)?.with_health(health)?,
-            )),
+            store: Arc::new(Mutex::new(store)),
             config: crate::config_management::ConfigManagement::new(config_path, active.clone())?,
+            tracking_source: Arc::new(crate::tracking::GithubTrackingSource::new(
+                std::env::var("GITHUB_TOKEN").ok(),
+            )?),
         })
+    }
+    pub fn with_tracking_source(
+        mut self,
+        source: Arc<dyn crate::tracking::TrackingSource>,
+    ) -> Self {
+        self.tracking_source = source;
+        self
     }
 }
 
@@ -207,8 +218,128 @@ async fn save_configuration(
     }
 }
 
+async fn tracking_list(
+    State(admin): State<Admin>,
+) -> ApiResult<Json<Vec<crate::tracking::TrackedIssue>>> {
+    Ok(Json(admin.store.lock().unwrap().tracked_issues()?))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrackingInput {
+    url: String,
+}
+async fn tracking_add(
+    State(admin): State<Admin>,
+    headers: HeaderMap,
+    Json(body): Json<TrackingInput>,
+) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    verify_write(&headers)?;
+    let (repository, number) = crate::tracking::issue_url(&body.url)
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
+    if !admin
+        .store
+        .lock()
+        .unwrap()
+        .tracking_repository_allowed(&repository)?
+    {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "只能追踪已配置的监控仓库".into(),
+        ));
+    }
+    let now = chrono::Utc::now();
+    let snapshot = admin
+        .tracking_source
+        .snapshot(&repository, number)
+        .await
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e.to_string()))?;
+    let (added, tracking) = admin
+        .store
+        .lock()
+        .unwrap()
+        .add_tracking(&repository, number, &snapshot, now)
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok((
+        if added {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
+        Json(
+            json!({"added":added,"tracking":tracking,"message":if added {"已添加追踪"}else{"该 Issue 已在追踪中"}}),
+        ),
+    ))
+}
+async fn tracking_remove(
+    State(admin): State<Admin>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    headers: HeaderMap,
+) -> ApiResult<Json<serde_json::Value>> {
+    verify_write(&headers)?;
+    let removed = admin.store.lock().unwrap().cancel_tracking(id)?;
+    Ok(Json(
+        json!({"removed":removed,"message":if removed {"已取消共享追踪"} else {"该 Issue 未在追踪中"}}),
+    ))
+}
+
+async fn permissions_list(
+    State(admin): State<Admin>,
+) -> ApiResult<Json<Vec<crate::tracking::TrackingPermissions>>> {
+    Ok(Json(
+        admin.store.lock().unwrap().all_tracking_permissions()?,
+    ))
+}
+async fn permissions_save(
+    State(admin): State<Admin>,
+    axum::extract::Path(user): axum::extract::Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<crate::tracking::TrackingPermissions>,
+) -> ApiResult<Json<serde_json::Value>> {
+    verify_write(&headers)?;
+    admin
+        .store
+        .lock()
+        .unwrap()
+        .set_tracking_permissions(&user, body.can_add, body.can_cancel)
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(json!({"saved":true})))
+}
 pub fn router(admin: Admin) -> Router {
     Router::new()
+        .route(
+            "/admin-tracking.js",
+            get(|| async {
+                (
+                    [(
+                        axum::http::header::CONTENT_TYPE,
+                        "text/javascript; charset=utf-8",
+                    )],
+                    include_str!("admin-tracking.js"),
+                )
+            }),
+        )
+        .route("/api/admin/tracking", get(tracking_list).post(tracking_add))
+        .route(
+            "/api/admin/tracking/{id}",
+            axum::routing::delete(tracking_remove),
+        )
+        .route("/api/admin/permissions", get(permissions_list))
+        .route(
+            "/api/admin/permissions/{user}",
+            axum::routing::put(permissions_save),
+        )
+        .route(
+            "/admin-navigation.js",
+            get(|| async {
+                (
+                    [(
+                        axum::http::header::CONTENT_TYPE,
+                        "text/javascript; charset=utf-8",
+                    )],
+                    include_str!("admin-navigation.js"),
+                )
+            }),
+        )
         .route(
             "/admin.js",
             get(|| async {

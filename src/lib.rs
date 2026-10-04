@@ -10,6 +10,8 @@ pub mod qq_health;
 pub mod queue;
 pub mod reload;
 pub mod store;
+pub mod tracking;
+mod tracking_store;
 
 pub use config::Config;
 pub use model::{IssueNotification, MonitoredRepository, NotificationState};

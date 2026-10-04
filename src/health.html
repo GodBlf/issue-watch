@@ -2,41 +2,46 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Issue 监控 · 健康状态</title>
+<title>Issue Watch · 管理后台</title>
 <style>
 :root{font:16px/1.6 system-ui,sans-serif;color:#183047;background:#eff3f6}body{max-width:1000px;margin:40px auto;padding:0 20px}h1{margin-bottom:8px}header p{color:#526779}section{background:white;border:1px solid #d7e1e8;border-radius:12px;padding:24px;margin:20px 0}#status{font-size:30px;font-weight:700}#connection{background:#fff2d0;border-left:4px solid #b78215;padding:12px}dl{display:grid;grid-template-columns:140px 1fr;gap:8px}dd{margin:0;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}small{color:#526779}.component{border-top:1px solid #e4e9ed;padding:12px 0}.status-normal{color:#18724d}.status-warning{color:#976109}.status-error{color:#b32626}.status-unknown{color:#526779}h2{font-size:20px}h3{font-size:17px}
 </style>
 <style>
 form{display:flex;flex-wrap:wrap;gap:12px;align-items:end}label{display:flex;flex-direction:column;gap:4px;font-size:14px}input,button{font:inherit;padding:8px 12px;border:1px solid #bbcbd7;border-radius:6px;max-width:100%;box-sizing:border-box}input{background:#fff;color:#183047}button{background:#e8f0f7;color:#183047;cursor:pointer}button:disabled{opacity:.5;cursor:wait}button:focus-visible,input:focus-visible{outline:3px solid #619ace}#subscriptions p,#repositories p{overflow-wrap:anywhere}[role=status]{white-space:pre-wrap;overflow-wrap:anywhere}nav a{margin-right:16px}
 </style>
-</head>
+<style>
+[hidden]{display:none!important}body{max-width:none;margin:0;padding:0 28px 24px 244px}main{max-width:1100px;margin:auto}.sidebar{position:fixed;left:0;top:0;bottom:0;width:192px;background:#142c40;padding:24px;color:white;display:flex;flex-direction:column;gap:12px}.sidebar strong{font-size:22px;margin-bottom:20px}.sidebar a{color:#d6e4ef;text-decoration:none;padding:10px;border-radius:8px}.sidebar a[aria-current=page]{background:#315b78;color:white}header{padding-top:20px}section{box-shadow:0 2px 12px #18304708}input:focus,button:focus-visible,a:focus-visible{outline:3px solid #619ace}button{background:#eaf3fa}details{margin:12px 0}summary{cursor:pointer;font-weight:600}.pager{display:flex;gap:12px;align-items:center;padding:12px 0}.toolbar{display:flex;gap:12px;align-items:center;margin:16px 0}
+@media(max-width:760px){body{padding:0 14px 20px}.sidebar{position:sticky;top:0;z-index:5;box-sizing:border-box;width:100%;height:auto;display:flex;flex-direction:row;flex-wrap:wrap;padding:10px;gap:4px}.sidebar strong{display:none}.sidebar a{padding:6px;font-size:14px}section{padding:16px}dl{grid-template-columns:110px 1fr}}
+</style></head>
 <body>
-<header><h1>Issue 监控健康状态</h1><p>本次运行的状态 · 每 10 秒自动刷新 · 本机管理员入口</p></header>
+<nav class="sidebar" aria-label="后台导航"><strong>Issue Watch</strong><a href="#overview" data-target="overview">概览</a><a href="#repositories" data-target="repositories">仓库</a><a href="#subscriptions" data-target="subscriptions">广播接收者</a><a href="#permissions" data-target="permissions">用户权限</a><a href="#settings" data-target="settings">设置</a></nav><main>
+<header><h1>Issue Watch 管理后台</h1><p>本次运行的状态 · 每 10 秒自动刷新 · 本机管理员入口</p></header>
 <p id="connection" role="alert" hidden></p>
-<nav aria-label="页面区域"><a href="#subscription-management">广播接收者</a><a href="#configuration-management">监控配置</a></nav>
-<section aria-live="polite"><small>整体状态</small><div id="status" class="status-unknown">未知</div>
+<div data-view="overview">
+<section aria-live="polite"><h2>健康状态</h2><small>整体状态</small><div id="status" class="status-unknown">未知</div>
 <dl><dt>数据更新时间</dt><dd id="updated">尚无数据</dd><dt>启动时间</dt><dd id="started">未知</dd><dt>运行时长</dt><dd id="uptime">未知</dd></dl></section>
 <p id="reasons"></p>
 <section><h2>业务观察</h2><div id="components">尚无检查结果，等待业务观察。</div></section>
-<section id="subscription-management"><h2>广播接收者</h2>
+</div><div data-view="subscriptions" hidden><section id="subscription-management"><h2>广播接收者</h2>
 <p>所有接收者共享监控仓库。发送使用当前机器人的 user_openid，QQ 号仅作备注。保存订阅不代表已验证发送权限。</p>
-<form id="add-subscription"><label>user_openid <input name="user_openid" required maxlength="256" autocomplete="off"></label>
-<label>QQ 号备注（选填） <input name="qq_number_note" maxlength="256" autocomplete="off"></label><button>添加接收者</button></form>
-<p id="subscription-message" role="status" aria-live="polite"></p><div id="subscriptions">正在加载接收者…</div></section>
-<section id="configuration-management"><h2>监控配置</h2>
+<details><summary>添加广播接收者</summary><form id="add-subscription"><label>user_openid <input name="user_openid" required maxlength="256" autocomplete="off"></label>
+<label>QQ 号备注（选填） <input name="qq_number_note" maxlength="256" autocomplete="off"></label><button>添加接收者</button></form></details>
+<p id="subscription-message" role="status" aria-live="polite"></p><div class="toolbar"><label>搜索 <input id="subscription-search" type="search" placeholder="搜索列表" autocomplete="off"></label></div><div class="pager"><button id="subscription-previous" type="button">上一页</button><span id="subscription-page"></span><button id="subscription-next" type="button">下一页</button></div><div id="subscriptions">正在加载接收者…</div></section>
+</div><div data-view="settings" hidden><section id="configuration-management"><h2>监控配置</h2>
 <p id="configuration-stage" role="status" aria-live="polite">正在读取配置…</p>
 <form id="poll-interval"><label>轮询间隔（秒，1–86400） <input name="seconds" type="number" min="1" max="86400" step="1" required disabled></label><button disabled>保存间隔</button></form>
+<form id="tracking-interval"><label>Issue 追踪检查间隔（秒，1–86400） <input name="seconds" type="number" min="1" max="86400" step="1" required disabled></label><button disabled>保存追踪间隔</button></form>
 <button id="reload-configuration" type="button">刷新配置／放弃未保存的间隔</button>
 <p id="configuration-message" role="status" aria-live="polite"></p>
-<h3>共享监控仓库</h3><p>首次添加不发送历史 Issue；重新添加曾监控的仓库会恢复原进度，补发停用期间的新建 Issue。移除后已有通知继续投递。至少保留一个仓库。</p>
-<form id="add-repository"><label>监控仓库（owner/name） <input name="repository" required maxlength="256" placeholder="owner/name" autocomplete="off"></label><button disabled>添加仓库</button></form>
-<div id="repositories">正在加载仓库…</div>
+</section></div><div data-view="repositories" hidden><section id="repository-list-panel"><h2>共享监控仓库</h2><p>首次添加不发送历史 Issue；重新添加曾监控的仓库会恢复原进度，补发停用期间的新建 Issue。移除后新建 Issue 通知继续投递，该仓库追踪及待发送动态取消。至少保留一个仓库。</p>
+<details><summary>添加监控仓库</summary><form id="add-repository"><label>监控仓库（owner/name） <input name="repository" required maxlength="256" placeholder="owner/name" autocomplete="off"></label><button disabled>添加仓库</button></form></details><p id="repository-message" role="status"></p>
+<div class="toolbar"><label>搜索 <input id="repository-search" type="search" placeholder="搜索列表" autocomplete="off"></label></div><div class="pager"><button id="repository-previous" type="button">上一页</button><span id="repository-page"></span><button id="repository-next" type="button">下一页</button></div><div id="repositories">正在加载仓库…</div>
 </section>
-<small>连接失败仅表示网页暂时无法取得状态，不能确定程序、服务器或 SSH 隧道的具体情况。服务器不可达时，新打开页面可能直接显示浏览器连接错误。时间使用 UTC。</small>
+<section><button id="repository-back" type="button" hidden>返回仓库列表</button><h2 id="tracking-repository">Issue 追踪</h2><p>共享追踪动态发送给所有广播接收者。Issue 关闭后自动清理。读取动态及关联 PR 需要配置 GitHub Token。</p><details><summary>添加 Issue 追踪</summary><form id="add-tracking"><label>完整 Issue URL <input name="url" type="url" required maxlength="2048" placeholder="https://github.com/owner/repo/issues/123"></label><button>添加追踪</button></form></details><p id="tracking-message" role="status" aria-live="polite"></p><div class="toolbar"><label>搜索 <input id="tracking-search" type="search" placeholder="搜索列表" autocomplete="off"></label></div><div class="pager"><button id="tracking-previous" type="button">上一页</button><span id="tracking-page"></span><button id="tracking-next" type="button">下一页</button></div><div id="tracking-list">正在读取追踪…</div></section></div><div data-view="permissions" hidden><section><h2>用户权限</h2><p>所有 QQ 用户默认无权限。添加与取消分别授权；取消权限可停止任何共享追踪。退出广播或撤销权限不删除追踪。</p><details><summary>录入用户权限</summary><form id="add-permission"><label>user_openid <input name="user_openid" required maxlength="256" autocomplete="off"></label><label>添加追踪 <input name="can_add" type="checkbox"></label><label>取消任意共享追踪 <input name="can_cancel" type="checkbox"></label><button>保存权限</button></form></details><p id="permission-message" role="status" aria-live="polite"></p><div class="toolbar"><label>搜索 <input id="permissions-search" type="search" placeholder="搜索列表" autocomplete="off"></label></div><div class="pager"><button id="permissions-previous" type="button">上一页</button><span id="permissions-page"></span><button id="permissions-next" type="button">下一页</button></div><div id="permissions-list">正在读取权限…</div></section></div></main><small>连接失败仅表示网页暂时无法取得状态，不能确定程序、服务器或 SSH 隧道的具体情况。服务器不可达时，新打开页面可能直接显示浏览器连接错误。时间使用 UTC。</small>
 <script>
 const labels = {normal:'正常',warning:'警告',error:'异常',unknown:'未知'};
-const names = {github:'GitHub 检查',qq_gateway:'QQ 连接',qq_binding:'通知目标绑定',qq_auth:'QQ 鉴权',qq_delivery:'实际通知发送',notification_queue:'通知队列',progress:'业务推进',overall:'整体健康'};
-const fieldNames = {status:'状态',error:'当前错误',repository:'监控仓库',repositories:'监控仓库',last_attempt_at:'最近尝试时间',last_success_at:'最近成功时间',consecutive_failures:'连续失败次数',pending:'待发送',retrying:'重试中',permanent_failed:'永久失败',connected:'连接状态',bound:'绑定状态',subscriber_count:'订阅人数',subscription_id:'订阅编号',result:'结果',at:'观察时间',active:'正在处理',stage:'当前步骤',last_progress_at:'最近推进时间',threshold_seconds:'卡住阈值（秒）',stalled:'已停止推进',failures:'失败记录',number:'Issue 编号',state:'通知状态',enqueued_at:'入队时间',sent_at:'发送时间',last_error:'失败原因',sent:'已发送',errors:'失败记录'};
+const names = {issue_tracking:'Issue 追踪',github:'GitHub 检查',qq_gateway:'QQ 连接',qq_binding:'通知目标绑定',qq_auth:'QQ 鉴权',qq_delivery:'实际通知发送',notification_queue:'通知队列',progress:'业务推进',overall:'整体健康'};
+const fieldNames = {batch_id:'动态批次',kind:'通知类型',title:'标题',url:'链接',started_at:'追踪开始时间',last_success_at:'最近成功检查',status:'状态',error:'当前错误',repository:'监控仓库',repositories:'监控仓库',last_attempt_at:'最近尝试时间',last_success_at:'最近成功时间',consecutive_failures:'连续失败次数',pending:'待发送',retrying:'重试中',permanent_failed:'永久失败',connected:'连接状态',bound:'绑定状态',subscriber_count:'订阅人数',subscription_id:'订阅编号',result:'结果',at:'观察时间',active:'正在处理',stage:'当前步骤',last_progress_at:'最近推进时间',threshold_seconds:'卡住阈值（秒）',stalled:'已停止推进',failures:'失败记录',number:'Issue 编号',state:'通知状态',enqueued_at:'入队时间',sent_at:'发送时间',last_error:'失败原因',sent:'已发送',errors:'失败记录'};
 const values = {...labels,unverified:'未验证',verified:'已验证',failed:'失败',sent:'已发送',retrying:'重试中',permanent_failed:'永久失败',permanent_failure:'永久失败',pending:'待发送',waiting:'等待下一轮检查',working:'正在处理',checking_repository:'检查仓库',page_complete:'完成一页检查',repository_complete:'完成仓库检查',sending:'发送通知',delivery_started:'开始投递',delivery_complete:'投递结束',notification_sent:'通知发送完成',notification_complete:'通知处理完成'};
 let lastData = null;
 let loading = false;
@@ -89,6 +94,6 @@ async function refresh() {
 refresh();
 setInterval(refresh,10000);
 </script>
-<script src="/admin.js" defer></script>
+<script src="/admin.js" defer></script><script src="/admin-tracking.js" defer></script><script src="/admin-navigation.js" defer></script>
 </body>
 </html>
