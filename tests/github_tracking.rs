@@ -35,6 +35,30 @@ async fn github_timeline_pages_expose_comments_closure_and_explicit_cross_reposi
     task.abort();
 }
 #[tokio::test]
+async fn linked_pr_failure_does_not_hide_an_issue_close() {
+    let app = Router::new()
+        .route("/repos/owner/repo/issues/12", get(|| async { Json(json!({"title":"bug","state":"closed"})) }))
+        .route("/graphql", post(|Json(body): Json<Value>| async move {
+            if body["query"].as_str().unwrap().contains("pullRequest(number") {
+                return Json(json!({"errors":[{"message":"Resource inaccessible"}]}));
+            }
+            Json(json!({"data":{"repository":{"issue":{"timelineItems":{"nodes":[
+                {"__typename":"ConnectedEvent","id":"link","createdAt":"2026-10-04T01:01:00Z","source":{"__typename":"PullRequest","url":"https://github.com/other/repo/pull/8"}},
+                {"__typename":"ClosedEvent","id":"close","createdAt":"2026-10-04T01:02:00Z"}
+            ],"pageInfo":{"hasNextPage":false}}}}}}))
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let source = GithubTrackingSource::with_api_base(Some("test-token".into()), &base).unwrap();
+    let snapshot = source.snapshot("owner/repo", 12).await.unwrap();
+    assert!(snapshot
+        .activities
+        .iter()
+        .any(|event| event.kind == "closed"));
+    task.abort();
+}
+#[tokio::test]
 async fn only_explicitly_linked_prs_supply_merge_close_and_reopen_events() {
     let app=Router::new().route("/repos/owner/repo/issues/12",get(||async{Json(json!({"title":"bug","state":"open"}))}))
     .route("/graphql",post(|Json(body):Json<Value>|async move{
@@ -44,10 +68,12 @@ async fn only_explicitly_linked_prs_supply_merge_close_and_reopen_events() {
             {"__typename":"MergedEvent","id":"m1","createdAt":"2026-10-04T01:02:00Z","actor":{"login":"alice"}},
             {"__typename":"ClosedEvent","id":"c1","createdAt":"2026-10-04T01:02:00Z","actor":{"login":"alice"}},
             {"__typename":"ReopenedEvent","id":"r1","createdAt":"2026-10-04T01:03:00Z","actor":{"login":"alice"}}
+            ,{"__typename":"ClosedEvent","id":"late","createdAt":"2026-10-04T01:05:00Z","actor":{"login":"alice"}}
             ],"pageInfo":{"hasNextPage":false}}}}}}))
         } else {Json(json!({"data":{"repository":{"issue":{"timelineItems":{"nodes":[
         {"__typename":"CrossReferencedEvent","id":"ref","createdAt":"2026-10-04T01:00:00Z","willCloseTarget":false,"source":{"__typename":"PullRequest","title":"mention","url":"https://github.com/other/repo/pull/9"}},
         {"__typename":"ConnectedEvent","id":"link","createdAt":"2026-10-04T01:01:00Z","source":{"__typename":"PullRequest","title":"fix","url":"https://github.com/other/repo/pull/8"},"subject":{"__typename":"Issue"}}
+        ,{"__typename":"DisconnectedEvent","id":"unlink","createdAt":"2026-10-04T01:04:00Z","source":{"__typename":"PullRequest","url":"https://github.com/other/repo/pull/8"}}
         ],"pageInfo":{"hasNextPage":false}}}}}}))}
     }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -1,6 +1,7 @@
 (() => {
   const byId=id=>document.getElementById(id);
   const drafts=new Map();const pages={tracking:1,permissions:1};
+  window.issueWatchHasDrafts=()=>drafts.size>0;
   let tracking=[],permissions=[],busy=false,loading=false,repository='';
   async function request(path,method='GET',body){
     const response=await fetch(path,{method,cache:'no-store',signal:AbortSignal.timeout(30000),headers:method==='GET'?{}:{'Content-Type':'application/json','X-Issue-Watch-Admin':'1'},...(body===undefined?{}:{body:JSON.stringify(body)})});

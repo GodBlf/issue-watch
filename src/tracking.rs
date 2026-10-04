@@ -22,6 +22,7 @@ pub struct IssueSnapshot {
     pub is_pull_request: bool,
     pub activities: Vec<Activity>,
     pub linked_prs: Vec<String>,
+    pub partial_error: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TrackedIssue {
@@ -482,11 +483,16 @@ impl TrackingSource for GithubTrackingSource {
             is_pull_request: item.get("pull_request").is_some(),
             activities: vec![],
             linked_prs: vec![],
+            partial_error: None,
         };
         if snapshot.is_pull_request {
             return Ok(snapshot);
         }
         let mut linked = std::collections::BTreeSet::new();
+        let mut associations: std::collections::BTreeMap<
+            String,
+            Vec<(DateTime<Utc>, Option<DateTime<Utc>>)>,
+        > = std::collections::BTreeMap::new();
         for node in self.timeline(repository, number, false).await? {
             let kind = node["__typename"].as_str().unwrap_or("");
             let at = node["createdAt"]
@@ -531,10 +537,19 @@ impl TrackingSource for GithubTrackingSource {
                         is_pr && (kind == "ConnectedEvent" || node["willCloseTarget"] == true);
                     if kind == "DisconnectedEvent" {
                         linked.remove(url);
+                        if let Some(interval) = associations
+                            .get_mut(url)
+                            .and_then(|ranges| ranges.last_mut())
+                        {
+                            interval.1 = Some(at);
+                        }
                         continue;
                     }
-                    if explicit {
-                        linked.insert(url.to_owned());
+                    if explicit && linked.insert(url.to_owned()) {
+                        associations
+                            .entry(url.to_owned())
+                            .or_default()
+                            .push((at, None));
                     }
                     (
                         if explicit { "linked" } else { "referenced" },
@@ -556,7 +571,7 @@ impl TrackingSource for GithubTrackingSource {
             });
         }
         snapshot.linked_prs = linked.into_iter().collect();
-        for pr in &snapshot.linked_prs {
+        for (pr, intervals) in &associations {
             let url = url::Url::parse(pr)?;
             let parts: Vec<_> = url
                 .path()
@@ -570,13 +585,30 @@ impl TrackingSource for GithubTrackingSource {
             );
             let repository = repository_parts(&parts[..2])?;
             let number = parts[3].parse::<u64>()?;
-            let nodes = self.timeline(&repository, number, true).await?;
+            let nodes = match self.timeline(&repository, number, true).await {
+                Ok(nodes) => nodes,
+                Err(error) => {
+                    // A related resource failure must not suppress the Issue's own close.
+                    snapshot.partial_error = Some(format!("关联 PR {pr} 查询失败：{error}"));
+                    continue;
+                }
+            };
             let merged: std::collections::HashSet<_> = nodes
                 .iter()
                 .filter(|n| n["__typename"] == "MergedEvent")
                 .filter_map(|n| n["createdAt"].as_str())
                 .collect();
             for node in &nodes {
+                let at: DateTime<Utc> = node["createdAt"]
+                    .as_str()
+                    .context("关联 PR 动态缺少时间")?
+                    .parse()?;
+                if !intervals
+                    .iter()
+                    .any(|(start, end)| at >= *start && end.is_none_or(|end| at <= end))
+                {
+                    continue;
+                }
                 let kind = match node["__typename"].as_str() {
                     Some("MergedEvent") => "merged",
                     Some("ReopenedEvent") => "pr_reopened",
@@ -590,10 +622,7 @@ impl TrackingSource for GithubTrackingSource {
                 snapshot.activities.push(Activity {
                     key: node["id"].as_str().context("关联 PR 动态缺少标识")?.into(),
                     kind: kind.into(),
-                    at: node["createdAt"]
-                        .as_str()
-                        .context("关联 PR 动态缺少时间")?
-                        .parse()?,
+                    at,
                     actor: node["actor"]["login"].as_str().unwrap_or("unknown").into(),
                     text: format!("{repository} #{number}"),
                     url: pr.clone(),

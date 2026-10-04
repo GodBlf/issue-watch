@@ -112,12 +112,26 @@ impl Store {
         );
         anyhow::ensure!(!snapshot.is_pull_request, "该链接是 PR，请提供 Issue URL");
         anyhow::ensure!(snapshot.state == "open", "该 Issue 已关闭，不能添加追踪");
+        anyhow::ensure!(
+            snapshot.partial_error.is_none(),
+            "{}",
+            snapshot.partial_error.as_deref().unwrap_or_default()
+        );
         let added=self.conn.execute("INSERT OR IGNORE INTO tracked_issues(repository,number,title,url,started_at) VALUES(?1,?2,?3,?4,?5)",params![repository,number,snapshot.title,snapshot.url,now.to_rfc3339()])?==1;
         let issue = self
             .tracked_issues()?
             .into_iter()
             .find(|i| i.repository.eq_ignore_ascii_case(repository) && i.number == number)
             .unwrap();
+        if added {
+            // Baseline identities exclude history even when GitHub rounds timestamps to seconds.
+            for event in &snapshot.activities {
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO tracking_events(tracking_id,event_key) VALUES(?1,?2)",
+                    params![issue.id, event.key],
+                )?;
+            }
+        }
         transaction.commit()?;
         Ok((added, issue))
     }
@@ -162,17 +176,8 @@ impl Store {
             return Ok(0);
         }
         let mut fresh = vec![];
-        let closed_at = snapshot
-            .activities
-            .iter()
-            .filter(|event| event.kind == "closed" && event.at > issue.started_at)
-            .map(|event| event.at)
-            .min();
         for event in &snapshot.activities {
-            if closed_at.is_some_and(|at| event.at > at) {
-                continue;
-            }
-            if event.at > issue.started_at
+            if event.at.timestamp() >= issue.started_at.timestamp()
                 && self.conn.execute(
                     "INSERT OR IGNORE INTO tracking_events(tracking_id,event_key) VALUES(?1,?2)",
                     params![issue.id, event.key],
@@ -180,6 +185,14 @@ impl Store {
             {
                 fresh.push(event.clone());
             }
+        }
+        let closed_at = fresh
+            .iter()
+            .filter(|event| event.kind == "closed")
+            .map(|event| event.at)
+            .min();
+        if let Some(at) = closed_at {
+            fresh.retain(|event| event.at <= at);
         }
         if !fresh.is_empty() {
             fresh.sort_by_key(|event| event.at);
@@ -191,7 +204,7 @@ impl Store {
             let batch = self.conn.last_insert_rowid();
             self.conn.execute("INSERT INTO tracking_deliveries(batch_id,subscription_id) SELECT ?1,id FROM broadcast_subscriptions",[batch])?;
         }
-        self.conn.execute("UPDATE tracked_issues SET title=?2,last_success_at=?3,error=NULL WHERE id=?1 AND active=1",params![issue.id,snapshot.title,now.to_rfc3339()])?;
+        self.conn.execute("UPDATE tracked_issues SET title=?2,last_success_at=CASE WHEN ?4 IS NULL THEN ?3 ELSE last_success_at END,error=?4 WHERE id=?1 AND active=1",params![issue.id,snapshot.title,now.to_rfc3339(),snapshot.partial_error])?;
         if fresh.iter().any(|event| event.kind == "closed") {
             self.conn
                 .execute("UPDATE tracked_issues SET active=0 WHERE id=?1", [issue.id])?;

@@ -28,6 +28,7 @@ fn snapshot() -> IssueSnapshot {
         is_pull_request: false,
         activities: vec![],
         linked_prs: vec![],
+        partial_error: None,
     }
 }
 struct Fixture {
@@ -248,6 +249,35 @@ async fn tracking_interval_is_independent_defaults_to_five_minutes_and_validates
         .unwrap();
     assert_eq!(saved["saved"]["tracking_interval_seconds"], 90);
     assert_eq!(saved["saved"]["poll_interval_seconds"], 60);
+}
+#[tokio::test]
+async fn starting_second_uses_event_baseline_and_new_close_ends_tracking() {
+    let f = Fixture::new().await;
+    let at = Utc::now();
+    f.source.0.lock().unwrap().activities = vec![activity("history", "comment", at)];
+    f.add().await;
+    let mut store = Store::open(&f.path).unwrap();
+    store.bind_user("alice").unwrap();
+    let start = store.tracked_issues().unwrap()[0].started_at;
+    let second = DateTime::from_timestamp(start.timestamp(), 0).unwrap();
+    f.source
+        .0
+        .lock()
+        .unwrap()
+        .activities
+        .push(activity("new-close", "closed", second));
+    issue_watch::tracking::check_tracked(&mut store, f.source.as_ref())
+        .await
+        .unwrap();
+    assert!(f.list().await.as_array().unwrap().is_empty());
+    let sink = Sink::default();
+    issue_watch::tracking::deliver_tracking(&store, &sink)
+        .await
+        .unwrap();
+    let messages = sink.0.lock().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].1.contains("Issue 关闭"));
+    assert!(!messages[0].1.contains("新评论"));
 }
 #[tokio::test]
 async fn close_then_reopen_ends_tracking_but_final_notification_survives_restart() {

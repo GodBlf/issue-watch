@@ -24,7 +24,12 @@ test('tracking and permissions can be managed without losing an unsaved permissi
   const edit=byId('permissions-list').querySelectorAll('input')[0];edit.checked=false;await edit.fire('input');
   for(const refresh of scheduled)await refresh();
   assert.equal(byId('permissions-list').querySelectorAll('input')[0].checked,false,'unsaved permissions survive polling');
+  byId('permissions-search').value='no-match';await byId('permissions-search').fire('input');
+  assert.equal(byId('permissions-list').querySelectorAll('form').length,0);
+  assert.equal(sandbox.window.issueWatchHasDrafts(),true,'hidden drafts still protect navigation');
+  byId('permissions-search').value='';await byId('permissions-search').fire('input');
   await byId('permissions-list').querySelectorAll('form')[0].fire();
+  assert.equal(sandbox.window.issueWatchHasDrafts(),false);
   assert.equal(JSON.parse(requests.filter(r=>r.method==='PUT').at(-1).body).can_add,false);
   await byId('tracking-list').querySelectorAll('button')[0].fire('click');assert.equal(byId('tracking-list').textContent,'暂无追踪 Issue。');
 });
