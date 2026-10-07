@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
     let github_health = Arc::new(GithubHealth::new(health.clone(), &config.file.repositories));
     // Reconcile and recover claims before admin, gateway or delivery workers can run.
     let mut store = Store::open(&config.file.database_path)?.with_health(health.clone())?;
-    store.start_monitoring(&config.file.repositories, chrono::Utc::now())?;
+    store.start_monitoring_with_clock(&config.file.repositories, chrono::Utc::now)?;
     let health_bind =
         std::env::var("ISSUE_WATCH_HEALTH_BIND").unwrap_or_else(|_| "127.0.0.1:8080".into());
     health.set_poll_interval(config.file.poll_interval_seconds);

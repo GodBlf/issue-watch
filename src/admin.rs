@@ -31,7 +31,7 @@ impl Admin {
         health: Health,
     ) -> anyhow::Result<Self> {
         let store = Store::open(&active.database_path)?.with_health(health)?;
-        store.reconcile_repositories(&active.repositories, chrono::Utc::now())?;
+        store.reconcile_repositories_with_clock(&active.repositories, chrono::Utc::now)?;
         Ok(Self {
             store: Arc::new(Mutex::new(store)),
             config: crate::config_management::ConfigManagement::new(config_path, active.clone())?,

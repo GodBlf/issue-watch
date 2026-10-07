@@ -571,3 +571,73 @@ async fn tracking_add_request_cannot_cross_repository_periods() {
     assert!(response.contains("监控周期已改变"), "{response}");
     assert!(store.tracked_issues().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn readd_baseline_is_sampled_after_waiting_for_sqlite_write_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("state.sqlite");
+    let path = dir.path().join("config.toml");
+    let store = Store::open(&database).unwrap();
+    store
+        .reconcile_repositories(&["owner/a".into(), "owner/b".into()], day(1))
+        .unwrap();
+    store
+        .reconcile_repositories(&["owner/b".into()], day(3))
+        .unwrap();
+    std::fs::write(&path, "repositories=['owner/b']").unwrap();
+    let mut reload = ConfigReloader::new(&path, FileConfig::load(&path).unwrap());
+    std::fs::write(&path, "repositories=['owner/a','owner/b']").unwrap();
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let blocker = std::thread::spawn(move || {
+        let conn = rusqlite::Connection::open(database).unwrap();
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        locked_tx.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let release_time = Utc::now();
+        conn.execute_batch("COMMIT").unwrap();
+        release_time
+    });
+    locked_rx.recv().unwrap();
+    reload.check_with_clock(&store, Utc::now).unwrap();
+    let release_time = blocker.join().unwrap();
+    assert!(
+        store
+            .ensure_repository("owner/a", day(9))
+            .unwrap()
+            .baseline
+            .unwrap()
+            >= release_time,
+        "baseline included the pre-acceptance lock wait"
+    );
+    struct DuringLock(DateTime<Utc>);
+    #[async_trait]
+    impl IssueSource for DuringLock {
+        async fn list_issues(
+            &self,
+            _: &str,
+            _: Option<DateTime<Utc>>,
+            page: u32,
+        ) -> anyhow::Result<Vec<GithubIssue>> {
+            Ok(if page == 1 {
+                vec![GithubIssue {
+                    number: 99,
+                    title: "created before acceptance".into(),
+                    author: "alice".into(),
+                    created_at: self.0,
+                    url: "https://github.com/owner/a/issues/99".into(),
+                    is_pull_request: false,
+                }]
+            } else {
+                vec![]
+            })
+        }
+    }
+    store.bind_user("alice").unwrap();
+    assert_eq!(
+        discover_repository(&DuringLock(release_time), &store, "owner/a", Utc::now())
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(store.pending_deliveries(Utc::now()).unwrap().is_empty());
+}
