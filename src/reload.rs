@@ -21,7 +21,11 @@ impl ConfigReloader {
         &self.active
     }
 
-    pub fn check(&mut self, store: &Store, now: DateTime<Utc>) -> Result<bool> {
+    pub fn check_with_clock(
+        &mut self,
+        store: &Store,
+        clock: impl Fn() -> DateTime<Utc>,
+    ) -> Result<bool> {
         let mut candidate = FileConfig::load(&self.path)?;
         anyhow::ensure!(
             candidate.database_path == self.active.database_path,
@@ -30,13 +34,17 @@ impl ConfigReloader {
         if candidate == self.active {
             return Ok(false);
         }
-        candidate.repositories = store.ensure_repositories(&candidate.repositories, now)?;
+        candidate.repositories =
+            store.reconcile_repositories_with_clock(&candidate.repositories, clock)?;
         if candidate == self.active {
             return Ok(false);
         }
-        store.set_tracking_repositories(&candidate.repositories)?;
         self.active = candidate;
         Ok(true)
+    }
+
+    pub fn check(&mut self, store: &Store, now: DateTime<Utc>) -> Result<bool> {
+        self.check_with_clock(store, || now)
     }
 }
 
@@ -117,10 +125,20 @@ pub async fn watch_config(
 }
 
 pub async fn watch_config_managed(
+    reload: ConfigReloader,
+    store: Store,
+    updates: tokio::sync::watch::Sender<FileConfig>,
+    management: Option<crate::config_management::ConfigManagement>,
+) {
+    watch_config_observed(reload, store, updates, management, None).await
+}
+
+pub async fn watch_config_observed(
     mut reload: ConfigReloader,
     store: Store,
     updates: tokio::sync::watch::Sender<FileConfig>,
     management: Option<crate::config_management::ConfigManagement>,
+    github: Option<std::sync::Arc<crate::github_health::GithubHealth>>,
 ) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
     let mut last_error = None;
@@ -129,8 +147,13 @@ pub async fn watch_config_managed(
         if updates.is_closed() {
             break;
         }
-        match reload.check(&store, Utc::now()) {
+        match reload.check_with_clock(&store, Utc::now) {
             Ok(changed) => {
+                if changed {
+                    if let Some(github) = &github {
+                        github.sync_repositories(&reload.active().repositories);
+                    }
+                }
                 if let Some(management) = &management {
                     management.accepted(reload.active());
                 }

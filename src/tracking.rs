@@ -135,13 +135,15 @@ pub async fn tracking_command(
             "只能追踪已配置的监控仓库"
         );
         let now = Utc::now();
+        let period = store.tracking_period(&repository)?;
         let snapshot = source.snapshot(&repository, number).await?;
         // An administrator may revoke permission while the external request is in flight.
         anyhow::ensure!(
             store.tracking_permissions(user)?.can_add,
             "权限不足：你没有执行此命令的权限，请联系后台管理人员。"
         );
-        let (added, issue) = store.add_tracking(&repository, number, &snapshot, now)?;
+        let (added, issue) =
+            store.add_tracking_for_period(&repository, number, &snapshot, now, Some(period))?;
         Ok(format!(
             "{}\n标题：{}\n状态：{}\n链接：{}",
             if added {
@@ -264,17 +266,15 @@ async fn deliver_tracking_inner<S: crate::qq::MessageSink + ?Sized>(
     now: DateTime<Utc>,
 ) -> Result<usize> {
     let mut sent = 0;
-    for (index, delivery) in store
-        .pending_tracking_deliveries(now)?
-        .into_iter()
-        .enumerate()
-    {
-        if index > 0 {
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        }
-        if !store.tracking_delivery_pending(&delivery)? {
+    let mut last_started = None;
+    for delivery in store.pending_tracking_deliveries(now)? {
+        if !crate::queue::pace_delivery(last_started, || store.tracking_delivery_pending(&delivery))
+            .await?
+            || !store.begin_tracking_delivery(&delivery)?
+        {
             continue;
         }
+        last_started = Some(tokio::time::Instant::now());
         if let Some(health) = health {
             health.progress(true, "sending");
         }

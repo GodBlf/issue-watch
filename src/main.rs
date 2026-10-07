@@ -26,7 +26,10 @@ async fn main() -> Result<()> {
             .chain(std::env::var("QQ_ACCESS_TOKEN").ok())
             .collect(),
     );
-    let github_health = GithubHealth::new(health.clone(), &config.file.repositories);
+    let github_health = Arc::new(GithubHealth::new(health.clone(), &config.file.repositories));
+    // Reconcile and recover claims before admin, gateway or delivery workers can run.
+    let mut store = Store::open(&config.file.database_path)?.with_health(health.clone())?;
+    store.start_monitoring_with_clock(&config.file.repositories, chrono::Utc::now)?;
     let health_bind =
         std::env::var("ISSUE_WATCH_HEALTH_BIND").unwrap_or_else(|_| "127.0.0.1:8080".into());
     health.set_poll_interval(config.file.poll_interval_seconds);
@@ -41,12 +44,8 @@ async fn main() -> Result<()> {
         }
     });
     eprintln!("Opening monitoring database");
-    let mut store = Store::open(&config.file.database_path)?.with_health(health.clone())?;
     let qq_health = issue_watch::qq_health::QqHealth::new(health.clone());
     qq_health.refresh_queue(&store)?;
-    for repository in &config.file.repositories {
-        store.ensure_repository(repository, chrono::Utc::now())?;
-    }
     let github = GithubClient::new(config.github_token.clone())?;
     eprintln!("Connecting to QQ API");
     info!("Requesting QQ access token");
@@ -117,12 +116,13 @@ async fn main() -> Result<()> {
     );
     let mut active = config.file.clone();
     let (updates, mut changes) = tokio::sync::watch::channel(active.clone());
-    let watcher_store = Store::open(&active.database_path)?;
-    tokio::spawn(issue_watch::reload::watch_config_managed(
+    let watcher_store = Store::open(&active.database_path)?.with_health(health.clone())?;
+    tokio::spawn(issue_watch::reload::watch_config_observed(
         issue_watch::reload::ConfigReloader::new(&config_path, active.clone()),
         watcher_store,
         updates,
         Some(config_management.clone()),
+        Some(github_health.clone()),
     ));
     let tracking_source =
         issue_watch::tracking::GithubTrackingSource::new(config.github_token.clone())?;
@@ -134,7 +134,6 @@ async fn main() -> Result<()> {
                 active = updated;
                 config_management.applied(&active);
                 health.set_poll_interval(active.poll_interval_seconds);
-                github_health.sync_repositories(&active.repositories);
                 continue;
             }
             issue_watch::reload::MonitoringEvent::Poll => {

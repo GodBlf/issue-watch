@@ -4,7 +4,27 @@ use crate::{
 };
 use anyhow::Result;
 use chrono::{Duration, Utc};
-use tokio::time::{sleep, Duration as TokioDuration};
+use tokio::time::{sleep, Duration as TokioDuration, Instant};
+
+/// Poll cancellation while pacing, so cancelled batches do not delay other repositories.
+pub(crate) async fn pace_delivery(
+    last: Option<Instant>,
+    pending: impl Fn() -> Result<bool>,
+) -> Result<bool> {
+    loop {
+        if !pending()? {
+            return Ok(false);
+        }
+        let Some(deadline) = last.map(|at| at + TokioDuration::from_secs(3)) else {
+            return Ok(true);
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(true);
+        }
+        sleep(remaining.min(TokioDuration::from_millis(100))).await;
+    }
+}
 
 pub async fn deliver_pending<S: MessageSink>(store: &Store, sink: &S) -> Result<usize> {
     deliver(store, sink, None).await
@@ -26,13 +46,14 @@ async fn deliver<S: MessageSink>(
     }
     let pending = store.pending_deliveries(Utc::now())?;
     let mut delivered = 0;
-    for (index, delivery) in pending.into_iter().enumerate() {
-        if index > 0 {
-            sleep(TokioDuration::from_secs(3)).await;
-        }
-        if !store.delivery_is_pending(&delivery)? {
+    let mut last_started = None;
+    for delivery in pending {
+        if !pace_delivery(last_started, || store.delivery_is_pending(&delivery)).await?
+            || !store.begin_delivery(&delivery)?
+        {
             continue;
         }
+        last_started = Some(Instant::now());
         if let Some(h) = health {
             h.progress(true, "sending");
         }

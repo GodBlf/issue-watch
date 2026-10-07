@@ -49,6 +49,22 @@ impl Store {
         )?;
         self.conn.execute_batch("CREATE TABLE IF NOT EXISTS monitored_repositories (name TEXT PRIMARY KEY, baseline TEXT, cursor TEXT); CREATE TABLE IF NOT EXISTS issue_notifications (repository TEXT NOT NULL, number INTEGER NOT NULL, title TEXT NOT NULL, author TEXT NOT NULL, created_at TEXT NOT NULL, url TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, last_error TEXT, PRIMARY KEY(repository, number)); CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")?;
         self.init_tracking()?;
+        let repo_columns = self
+            .conn
+            .prepare("PRAGMA table_info(monitored_repositories)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (name, definition) in [
+            ("active", "INTEGER NOT NULL DEFAULT 1"),
+            ("generation", "INTEGER NOT NULL DEFAULT 1"),
+        ] {
+            if !repo_columns.iter().any(|column| column == name) {
+                self.conn.execute(
+                    &format!("ALTER TABLE monitored_repositories ADD COLUMN {name} {definition}"),
+                    [],
+                )?;
+            }
+        }
         // Old rows intentionally retain NULL timestamps; Issue creation is not enqueue/send time.
         let mut columns = self
             .conn
@@ -116,9 +132,21 @@ impl Store {
         self.observe_queue()?;
         Ok(self)
     }
-    fn observe_queue(&self) -> Result<()> {
+    pub(crate) fn observe_queue(&self) -> Result<()> {
         if let Some(health) = &self.health {
             crate::qq_health::QqHealth(health.clone()).refresh_queue(self)?;
+            let issues = self.tracked_issues()?;
+            let errors: Vec<_> = issues.iter().filter_map(|issue| issue.error.as_ref()
+                .map(|error| serde_json::json!({"repository":issue.repository,"number":issue.number,"error":error}))).collect();
+            health.observe(
+                "issue_tracking",
+                if errors.is_empty() {
+                    crate::health::HealthStatus::Normal
+                } else {
+                    crate::health::HealthStatus::Warning
+                },
+                serde_json::json!({"active":issues.len(),"errors":errors}),
+            );
         }
         Ok(())
     }
@@ -127,13 +155,15 @@ impl Store {
         let existing: Option<MonitoredRepository> = self
             .conn
             .query_row(
-                "SELECT name, baseline, cursor FROM monitored_repositories WHERE name = ?1 COLLATE NOCASE",
+                "SELECT name, baseline, cursor, active, generation FROM monitored_repositories WHERE name = ?1 COLLATE NOCASE",
                 [name],
                 |row| {
                     Ok(MonitoredRepository {
                         name: row.get(0)?,
                         baseline: parse_dt(row.get(1)?),
                         cursor: parse_dt(row.get(2)?),
+                        active: row.get(3)?,
+                        generation: row.get(4)?,
                     })
                 },
             )
@@ -149,6 +179,8 @@ impl Store {
             name: name.to_string(),
             baseline: Some(now),
             cursor: None,
+            active: true,
+            generation: 1,
         })
     }
 
@@ -183,11 +215,24 @@ impl Store {
     }
 
     pub fn insert_notification(&self, issue: &IssueNotification) -> Result<bool> {
+        self.insert_notification_for_period(issue, None)
+    }
+
+    pub(crate) fn insert_notification_for_period(
+        &self,
+        issue: &IssueNotification,
+        generation: Option<i64>,
+    ) -> Result<bool> {
         // Serialize the recipient snapshot with bind/unbind on the gateway connection.
         let transaction = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
+        if let Some(generation) = generation {
+            if !self.repository_period_current(&issue.repository, generation)? {
+                return Ok(false);
+            }
+        }
         let now = Utc::now().to_rfc3339();
         let changed = self.conn.execute("INSERT OR IGNORE INTO issue_notifications(repository, number, title, author, created_at, url, state, enqueued_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'pending',?7)", params![issue.repository, issue.number, issue.title, issue.author, issue.created_at.to_rfc3339(), issue.url,now])?;
         if changed == 1 {
@@ -216,6 +261,7 @@ impl Store {
             ON n.repository=d.repository AND n.number=d.number
             JOIN broadcast_subscriptions s ON s.id=d.subscription_id
             WHERE d.state IN ('pending','retry') AND (d.next_attempt_at IS NULL OR d.next_attempt_at<=?1)
+            AND EXISTS(SELECT 1 FROM monitored_repositories r WHERE r.name=d.repository COLLATE NOCASE AND r.active=1)
             ORDER BY n.created_at,n.repository,n.number,s.id")?;
         let rows = stmt.query_map([now.to_rfc3339()], |row| {
             Ok(PendingDelivery {
@@ -231,14 +277,20 @@ impl Store {
     pub fn delivery_is_pending(&self, delivery: &PendingDelivery) -> Result<bool> {
         Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM notification_deliveries d
             JOIN broadcast_subscriptions s ON s.id=d.subscription_id
-            WHERE d.subscription_id=?1 AND d.repository=?2 AND d.number=?3 AND d.state IN ('pending','retry'))",
+            WHERE d.subscription_id=?1 AND d.repository=?2 AND d.number=?3 AND d.state IN ('pending','retry')
+            AND EXISTS(SELECT 1 FROM monitored_repositories r WHERE r.name=d.repository COLLATE NOCASE AND r.active=1))",
             params![delivery.subscription_id,delivery.issue.repository,delivery.issue.number],
             |row| row.get(0))?)
     }
 
+    /// The atomic claim is the send-start boundary, serialized with repository removal.
+    pub(crate) fn begin_delivery(&self, delivery: &PendingDelivery) -> Result<bool> {
+        Ok(self.conn.execute("UPDATE notification_deliveries SET state='sending' WHERE subscription_id=?1 AND repository=?2 AND number=?3 AND state IN ('pending','retry') AND EXISTS(SELECT 1 FROM broadcast_subscriptions s WHERE s.id=subscription_id) AND EXISTS(SELECT 1 FROM monitored_repositories r WHERE r.name=repository COLLATE NOCASE AND r.active=1)", params![delivery.subscription_id,delivery.issue.repository,delivery.issue.number])? == 1)
+    }
+
     pub fn mark_sent(&self, delivery: &PendingDelivery) -> Result<()> {
         self.conn.execute("UPDATE notification_deliveries SET state='sent', next_attempt_at=NULL, last_error=NULL,sent_at=?4
-            WHERE subscription_id=?1 AND repository=?2 AND number=?3 AND state IN ('pending','retry')",
+            WHERE subscription_id=?1 AND repository=?2 AND number=?3 AND state IN ('pending','retry','sending','cancelled_inflight')",
             params![delivery.subscription_id,delivery.issue.repository,delivery.issue.number,Utc::now().to_rfc3339()])?;
         self.observe_queue()
     }
@@ -248,14 +300,14 @@ impl Store {
         next: DateTime<Utc>,
         error: &str,
     ) -> Result<()> {
-        self.conn.execute("UPDATE notification_deliveries SET state='retry',attempts=attempts+1,next_attempt_at=?4,last_error=?5
-            WHERE subscription_id=?1 AND repository=?2 AND number=?3 AND state IN ('pending','retry')",
+        self.conn.execute("UPDATE notification_deliveries SET state=CASE WHEN state='cancelled_inflight' THEN 'cancelled' ELSE 'retry' END,attempts=attempts+1,next_attempt_at=CASE WHEN state='cancelled_inflight' THEN NULL ELSE ?4 END,last_error=?5
+            WHERE subscription_id=?1 AND repository=?2 AND number=?3 AND state IN ('pending','retry','sending','cancelled_inflight')",
             params![delivery.subscription_id,delivery.issue.repository,delivery.issue.number,next.to_rfc3339(),error])?;
         self.observe_queue()
     }
     pub fn mark_permanent_failure(&self, delivery: &PendingDelivery, error: &str) -> Result<()> {
-        self.conn.execute("UPDATE notification_deliveries SET state='permanent_failure',attempts=attempts+1,last_error=?4
-            WHERE subscription_id=?1 AND repository=?2 AND number=?3 AND state IN ('pending','retry')",
+        self.conn.execute("UPDATE notification_deliveries SET state=CASE WHEN state='cancelled_inflight' THEN 'cancelled' ELSE 'permanent_failure' END,attempts=attempts+1,last_error=?4
+            WHERE subscription_id=?1 AND repository=?2 AND number=?3 AND state IN ('pending','retry','sending','cancelled_inflight')",
             params![delivery.subscription_id,delivery.issue.repository,delivery.issue.number,error])?;
         self.observe_queue()
     }
@@ -281,7 +333,7 @@ impl Store {
         let mut failures=statement.query_map([],|row| Ok(serde_json::json!({"subscription_id":row.get::<_,i64>(0)?,"repository":row.get::<_,String>(1)?,"number":row.get::<_,u64>(2)?,"state":row.get::<_,String>(3)?,"error":row.get::<_,Option<String>>(4)?,"enqueued_at":row.get::<_,Option<String>>(5)?,"sent_at":row.get::<_,Option<String>>(6)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         failures.extend(self.tracking_delivery_failures()?);
         Ok(
-            serde_json::json!({"pending":count("pending")?,"retrying":count("retry")?,"permanent_failed":count("permanent_failure")?,"failures":failures}),
+            serde_json::json!({"pending":count("pending")?,"retrying":count("retry")?,"permanent_failed":count("permanent_failure")?,"sent":count("sent")?,"cancelled":count("cancelled")?,"sending":count("sending")?+count("cancelled_inflight")?,"failures":failures}),
         )
     }
     pub fn bind_user(&self, openid: &str) -> Result<bool> {
@@ -329,12 +381,12 @@ impl Store {
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        self.conn.execute(&format!("UPDATE tracking_deliveries SET state='cancelled',next_attempt_at=NULL WHERE subscription_id IN (SELECT id FROM broadcast_subscriptions WHERE {column}=?1) AND state IN ('pending','retry','permanent_failure')"), [&identity])?;
+        self.conn.execute(&format!("UPDATE tracking_deliveries SET state=CASE WHEN state='sending' THEN 'cancelled_inflight' ELSE 'cancelled' END,next_attempt_at=NULL WHERE subscription_id IN (SELECT id FROM broadcast_subscriptions WHERE {column}=?1) AND state IN ('pending','retry','permanent_failure','sending')"), [&identity])?;
         self.conn.execute(
             &format!(
-                "UPDATE notification_deliveries SET state='cancelled',next_attempt_at=NULL
+                "UPDATE notification_deliveries SET state=CASE WHEN state='sending' THEN 'cancelled_inflight' ELSE 'cancelled' END,next_attempt_at=NULL
             WHERE subscription_id IN (SELECT id FROM broadcast_subscriptions WHERE {column}=?1)
-            AND state IN ('pending','retry','permanent_failure')"
+            AND state IN ('pending','retry','permanent_failure','sending')"
             ),
             [&identity],
         )?;

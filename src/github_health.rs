@@ -72,7 +72,7 @@ impl GithubHealth {
         self.health
             .observe("github", status, json!({"repositories": *repositories}));
     }
-    /// Apply only the configuration that the business loop has accepted.
+    /// Publish the repository set once its lifecycle transaction has been accepted.
     pub fn sync_repositories(&self, active: &[String]) {
         {
             let mut repositories = self.repositories.lock().unwrap();

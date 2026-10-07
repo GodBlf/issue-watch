@@ -72,7 +72,7 @@ fn invalid_or_missing_config_keeps_last_good_settings_and_recovers() {
 }
 
 #[test]
-fn removed_repository_stops_monitoring_but_readding_resumes_progress() {
+fn removed_repository_stops_monitoring_and_readding_starts_a_new_period() {
     let (dir, mut reload, store) = fixture();
     let now = Utc::now();
     store.set_cursor("owner/old", now).unwrap();
@@ -82,7 +82,11 @@ fn removed_repository_stops_monitoring_but_readding_resumes_progress() {
     assert!(!reload.active().repositories.contains(&"owner/old".into()));
     fs::write(path, "repositories = ['owner/old']").unwrap();
     reload.check(&store, now).unwrap();
-    assert_eq!(store.get_cursor("owner/old").unwrap(), Some(now));
+    assert_eq!(store.get_cursor("owner/old").unwrap(), None);
+    assert_eq!(
+        store.ensure_repository("owner/old", now).unwrap().baseline,
+        Some(now)
+    );
 }
 
 #[tokio::test]

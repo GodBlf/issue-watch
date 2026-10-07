@@ -7,6 +7,7 @@ use issue_watch::{
 #[test]
 fn startup_distinguishes_unbound_and_unverified_delivery() {
     let store = Store::open_in_memory().unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     let health = Health::new(vec![]);
     let qq = QqHealth::new(health.clone());
     qq.refresh_queue(&store).unwrap();
@@ -65,6 +66,7 @@ fn legacy_queue_times_remain_unknown_instead_of_copying_issue_creation_time() {
     connection.execute_batch("CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO settings VALUES('qq_user_openid','legacy-user');").unwrap();
     drop(connection);
     let store = Store::open(&path).unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     let health = Health::new(vec![]);
     QqHealth::new(health.clone()).refresh_queue(&store).unwrap();
     let snapshot = health.snapshot();
@@ -107,6 +109,7 @@ fn issue(number: u64) -> IssueNotification {
 #[tokio::test]
 async fn successful_send_does_not_hide_unresolved_permanent_failures() {
     let store = Store::open_in_memory().unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     store.bind_user("u").unwrap();
     store.insert_notification(&issue(1)).unwrap();
     let health = Health::new(vec!["private".into()]);
@@ -141,6 +144,7 @@ async fn successful_send_does_not_hide_unresolved_permanent_failures() {
 #[tokio::test]
 async fn auth_failure_is_explicit_and_disconnect_does_not_invalidate_http_send() {
     let store = Store::open_in_memory().unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     store.bind_user("u").unwrap();
     store.insert_notification(&issue(1)).unwrap();
     let health = Health::new(vec![]);
@@ -175,6 +179,7 @@ async fn retry_reason_and_queue_times_survive_restart_but_delivery_observation_d
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("queue.sqlite");
     let store = Store::open(&path).unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     store.bind_user("u").unwrap();
     store.insert_notification(&issue(1)).unwrap();
     let health = Health::new(vec![]);
@@ -190,6 +195,7 @@ async fn retry_reason_and_queue_times_survive_restart_but_delivery_observation_d
     .unwrap();
     drop(store);
     let store = Store::open(&path).unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     let restarted = Health::new(vec![]);
     QqHealth::new(restarted.clone())
         .refresh_queue(&store)
@@ -321,6 +327,7 @@ async fn body_timeout_is_retryable_and_visible_without_real_qq() {
         .unwrap()
     });
     let store = Store::open_in_memory().unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     store.bind_user("u").unwrap();
     store.insert_notification(&issue(1)).unwrap();
     let health = Health::new(vec![]);

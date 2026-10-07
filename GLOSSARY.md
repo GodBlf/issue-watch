@@ -7,6 +7,9 @@
 **监控仓库（Watched Repository）**：使用者指定的、需要关注新建 issue 的 GitHub 仓库。
 _Avoid_: 项目源、监听项目
 
+**监控周期（Monitoring Period）**：一个仓库从开始监控到移除之间的一段连续监控关系；重新加入开启新的监控周期。
+_Avoid_: 恢复旧监控、抓取进度
+
 **新建 Issue（New Issue）**：监控仓库中新提交的问题或需求条目。
 _Avoid_: Issue 更新、仓库动态
 

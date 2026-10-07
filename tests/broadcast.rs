@@ -45,6 +45,7 @@ async fn broadcasts_and_retries_only_the_failed_recipient_after_restart() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("broadcast.sqlite");
     let store = Store::open(&path).unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     store.bind_user("alice").unwrap();
     store.bind_user("bob").unwrap();
     store.insert_notification(&issue(1)).unwrap();
@@ -72,6 +73,7 @@ async fn broadcasts_and_retries_only_the_failed_recipient_after_restart() {
     assert_eq!(store.notification_summary().unwrap()["retrying"], 1);
     drop(store);
     let store = Store::open(&path).unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     let pending = store
         .pending_deliveries(Utc::now() + Duration::minutes(1))
         .unwrap();
@@ -93,6 +95,7 @@ async fn broadcasts_and_retries_only_the_failed_recipient_after_restart() {
 #[test]
 fn late_joiners_do_not_receive_history_or_another_users_backlog() {
     let store = Store::open_in_memory().unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     store.insert_notification(&issue(1)).unwrap(); // No subscribers yet.
     assert!(store.bind_user("alice").unwrap());
     assert!(store.pending_deliveries(Utc::now()).unwrap().is_empty());
@@ -115,6 +118,7 @@ fn late_joiners_do_not_receive_history_or_another_users_backlog() {
 #[test]
 fn unbinding_cancels_only_own_work_and_rebinding_does_not_restore_it() {
     let store = Store::open_in_memory().unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     store.bind_user("alice").unwrap();
     store.bind_user("bob").unwrap();
     store.insert_notification(&issue(1)).unwrap();
@@ -163,6 +167,7 @@ async fn a_recipient_that_leaves_during_a_batch_is_skipped() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("queue.sqlite");
     let store = Store::open(&path).unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     store.bind_user("alice").unwrap();
     store.bind_user("bob").unwrap();
     store.insert_notification(&issue(1)).unwrap();
@@ -198,6 +203,7 @@ fn migrates_old_binding_and_delivery_results_once_without_resurrecting_subscript
     let path = dir.path().join("legacy.sqlite");
     legacy_database(&path, true);
     let store = Store::open(&path).unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     assert_eq!(store.bound_users().unwrap(), ["original"]);
     assert_eq!(
         store
@@ -225,6 +231,7 @@ fn migrates_old_binding_and_delivery_results_once_without_resurrecting_subscript
     );
     drop(store);
     let store = Store::open(&path).unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     assert_eq!(store.notification_summary().unwrap(), summary);
     store.bind_user("newcomer").unwrap();
     assert!(store
@@ -235,6 +242,7 @@ fn migrates_old_binding_and_delivery_results_once_without_resurrecting_subscript
     store.unbind_user("original").unwrap();
     drop(store);
     let store = Store::open(&path).unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     assert_eq!(store.bound_users().unwrap(), ["newcomer"]);
     assert!(store.pending_deliveries(Utc::now()).unwrap().is_empty());
     assert_eq!(store.notification_summary().unwrap()["permanent_failed"], 0);
@@ -246,6 +254,7 @@ fn legacy_history_without_a_binding_is_not_given_to_new_subscribers() {
     let path = dir.path().join("legacy.sqlite");
     legacy_database(&path, false);
     let store = Store::open(&path).unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     store.bind_user("newcomer").unwrap();
     assert_eq!(store.recorded_notifications().unwrap().len(), 4);
     assert!(store.pending_deliveries(Utc::now()).unwrap().is_empty());
@@ -256,6 +265,7 @@ fn recipient_creation_failure_rolls_back_issue_and_all_deliveries() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("queue.sqlite");
     let store = Store::open(&path).unwrap();
+    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
     store.bind_user("alice").unwrap();
     store.bind_user("bob").unwrap();
     let db = rusqlite::Connection::open(&path).unwrap();
