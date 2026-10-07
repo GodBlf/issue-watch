@@ -67,14 +67,18 @@ impl Store {
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
+        self.replace_tracking_repositories(names)?;
+        transaction.commit()?;
+        Ok(())
+    }
+    pub(crate) fn replace_tracking_repositories(&self, names: &[String]) -> Result<()> {
         self.conn.execute("DELETE FROM tracking_repositories", [])?;
         for name in names {
             self.conn
                 .execute("INSERT INTO tracking_repositories(name) VALUES(?1)", [name])?;
         }
-        self.conn.execute("UPDATE tracking_deliveries SET state='cancelled',next_attempt_at=NULL WHERE state IN ('pending','retry','permanent_failure') AND batch_id IN (SELECT b.id FROM tracking_batches b JOIN tracked_issues t ON t.id=b.tracking_id WHERE NOT EXISTS(SELECT 1 FROM tracking_repositories r WHERE r.name=t.repository))",[])?;
+        self.conn.execute("UPDATE tracking_deliveries SET state=CASE WHEN state='sending' THEN 'cancelled_inflight' ELSE 'cancelled' END,next_attempt_at=NULL WHERE state IN ('pending','retry','permanent_failure','sending') AND batch_id IN (SELECT b.id FROM tracking_batches b JOIN tracked_issues t ON t.id=b.tracking_id WHERE NOT EXISTS(SELECT 1 FROM tracking_repositories r WHERE r.name=t.repository))",[])?;
         self.conn.execute("UPDATE tracked_issues SET active=0 WHERE active=1 AND NOT EXISTS(SELECT 1 FROM tracking_repositories r WHERE r.name=tracked_issues.repository)",[])?;
-        transaction.commit()?;
         Ok(())
     }
     pub fn tracked_issues(&self) -> Result<Vec<TrackedIssue>> {
@@ -102,10 +106,35 @@ impl Store {
         snapshot: &IssueSnapshot,
         now: DateTime<Utc>,
     ) -> Result<(bool, TrackedIssue)> {
+        self.add_tracking_for_period(repository, number, snapshot, now, None)
+    }
+    pub fn tracking_period(&self, repository: &str) -> Result<i64> {
+        anyhow::ensure!(
+            self.tracking_repository_allowed(repository)?,
+            "只能追踪已配置的监控仓库"
+        );
+        let repo = self.ensure_repository(repository, Utc::now())?;
+        anyhow::ensure!(repo.active, "仓库已移除");
+        Ok(repo.generation)
+    }
+    pub fn add_tracking_for_period(
+        &self,
+        repository: &str,
+        number: u64,
+        snapshot: &IssueSnapshot,
+        now: DateTime<Utc>,
+        generation: Option<i64>,
+    ) -> Result<(bool, TrackedIssue)> {
         let transaction = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
+        if let Some(generation) = generation {
+            anyhow::ensure!(
+                self.repository_period_current(repository, generation)?,
+                "仓库监控周期已改变，请重新添加追踪"
+            );
+        }
         anyhow::ensure!(
             self.tracking_repository_allowed(repository)?,
             "只能追踪已配置的监控仓库"
@@ -145,7 +174,7 @@ impl Store {
             [id],
         )? == 1;
         if removed {
-            self.conn.execute("UPDATE tracking_deliveries SET state='cancelled',next_attempt_at=NULL WHERE batch_id IN (SELECT id FROM tracking_batches WHERE tracking_id=?1) AND state IN ('pending','retry','permanent_failure')",[id])?;
+            self.conn.execute("UPDATE tracking_deliveries SET state=CASE WHEN state='sending' THEN 'cancelled_inflight' ELSE 'cancelled' END,next_attempt_at=NULL WHERE batch_id IN (SELECT id FROM tracking_batches WHERE tracking_id=?1) AND state IN ('pending','retry','permanent_failure','sending')",[id])?;
         }
         transaction.commit()?;
         Ok(removed)
@@ -216,7 +245,7 @@ impl Store {
         &self,
         now: DateTime<Utc>,
     ) -> Result<Vec<TrackingDelivery>> {
-        let mut stmt=self.conn.prepare("SELECT d.batch_id,d.subscription_id,s.user_openid,b.text FROM tracking_deliveries d JOIN tracking_batches b ON b.id=d.batch_id JOIN broadcast_subscriptions s ON s.id=d.subscription_id WHERE d.state IN ('pending','retry') AND (d.next_attempt_at IS NULL OR d.next_attempt_at<=?1) ORDER BY b.id,s.id")?;
+        let mut stmt=self.conn.prepare("SELECT d.batch_id,d.subscription_id,s.user_openid,b.text FROM tracking_deliveries d JOIN tracking_batches b ON b.id=d.batch_id JOIN tracked_issues t ON t.id=b.tracking_id JOIN tracking_repositories r ON r.name=t.repository JOIN broadcast_subscriptions s ON s.id=d.subscription_id WHERE d.state IN ('pending','retry') AND (d.next_attempt_at IS NULL OR d.next_attempt_at<=?1) ORDER BY b.id,s.id")?;
         let rows = stmt.query_map([now.to_rfc3339()], |row| {
             Ok(TrackingDelivery {
                 batch_id: row.get(0)?,
@@ -228,7 +257,10 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
     pub(crate) fn tracking_delivery_pending(&self, d: &TrackingDelivery) -> Result<bool> {
-        Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM tracking_deliveries d JOIN broadcast_subscriptions s ON s.id=d.subscription_id WHERE batch_id=?1 AND subscription_id=?2 AND state IN ('pending','retry'))",params![d.batch_id,d.subscription_id],|row|row.get(0))?)
+        Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM tracking_deliveries d JOIN broadcast_subscriptions s ON s.id=d.subscription_id JOIN tracking_batches b ON b.id=d.batch_id JOIN tracked_issues t ON t.id=b.tracking_id JOIN tracking_repositories r ON r.name=t.repository WHERE d.batch_id=?1 AND d.subscription_id=?2 AND d.state IN ('pending','retry'))",params![d.batch_id,d.subscription_id],|row|row.get(0))?)
+    }
+    pub(crate) fn begin_tracking_delivery(&self, d: &TrackingDelivery) -> Result<bool> {
+        Ok(self.conn.execute("UPDATE tracking_deliveries SET state='sending' WHERE batch_id=?1 AND subscription_id=?2 AND state IN ('pending','retry') AND EXISTS(SELECT 1 FROM broadcast_subscriptions s WHERE s.id=subscription_id) AND EXISTS(SELECT 1 FROM tracking_batches b JOIN tracked_issues t ON t.id=b.tracking_id JOIN tracking_repositories r ON r.name=t.repository WHERE b.id=batch_id)", params![d.batch_id,d.subscription_id])? == 1)
     }
     pub(crate) fn finish_tracking_delivery(
         &self,
@@ -237,7 +269,7 @@ impl Store {
         next: Option<DateTime<Utc>>,
         error: Option<&str>,
     ) -> Result<()> {
-        self.conn.execute("UPDATE tracking_deliveries SET state=?3,next_attempt_at=?4,last_error=?5,sent_at=CASE WHEN ?3='sent' THEN ?6 ELSE sent_at END WHERE batch_id=?1 AND subscription_id=?2 AND state IN ('pending','retry')",params![d.batch_id,d.subscription_id,state,next.map(|t|t.to_rfc3339()),error,Utc::now().to_rfc3339()])?;
+        self.conn.execute("UPDATE tracking_deliveries SET state=CASE WHEN state='cancelled_inflight' AND ?3<>'sent' THEN 'cancelled' ELSE ?3 END,next_attempt_at=CASE WHEN state='cancelled_inflight' THEN NULL ELSE ?4 END,last_error=?5,sent_at=CASE WHEN ?3='sent' THEN ?6 ELSE sent_at END WHERE batch_id=?1 AND subscription_id=?2 AND state IN ('pending','retry','sending','cancelled_inflight')",params![d.batch_id,d.subscription_id,state,next.map(|t|t.to_rfc3339()),error,Utc::now().to_rfc3339()])?;
         Ok(())
     }
     pub(crate) fn tracking_delivery_failures(&self) -> Result<Vec<serde_json::Value>> {

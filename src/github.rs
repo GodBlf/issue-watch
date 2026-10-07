@@ -116,12 +116,18 @@ pub async fn discover_repository<S: IssueSource>(
     now: DateTime<Utc>,
 ) -> Result<usize> {
     let repo = store.ensure_repository(repository, now)?;
+    if !repo.active {
+        return Ok(0);
+    }
     let since = repo.cursor.or(repo.baseline);
     let mut page = 1;
     let mut inserted = 0;
     let mut newest = since;
     loop {
         let page_items = source.list_issues(repository, since, page).await?;
+        if !store.repository_period_current(&repo.name, repo.generation)? {
+            return Ok(inserted);
+        }
         if page_items.is_empty() {
             break;
         }
@@ -138,14 +144,14 @@ pub async fn discover_repository<S: IssueSource>(
                 created_at: item.created_at,
                 url: item.url,
             };
-            if store.insert_notification(&notification)? {
+            if store.insert_notification_for_period(&notification, Some(repo.generation))? {
                 inserted += 1;
             }
         }
         page += 1;
     }
     if let Some(cursor) = newest {
-        store.set_cursor(&repo.name, cursor)?;
+        store.set_period_cursor(&repo.name, repo.generation, cursor)?;
     }
     Ok(inserted)
 }

@@ -370,7 +370,7 @@ async fn backend_grants_independent_command_permissions_and_revocation_keeps_sha
     assert_eq!(f.list().await.as_array().unwrap().len(), 1);
 }
 #[tokio::test]
-async fn accepted_repository_removal_cancels_tracking_but_keeps_new_issue_deliveries() {
+async fn accepted_repository_removal_cancels_tracking_and_new_issue_deliveries() {
     let f = Fixture::new().await;
     f.add().await;
     let mut store = Store::open(&f.path).unwrap();
@@ -411,7 +411,7 @@ async fn accepted_repository_removal_cancels_tracking_but_keeps_new_issue_delive
         .await
         .unwrap();
     assert!(sink.0.lock().unwrap().is_empty());
-    assert_eq!(store.pending_deliveries(Utc::now()).unwrap().len(), 1);
+    assert_eq!(store.pending_deliveries(Utc::now()).unwrap().len(), 0);
 }
 #[tokio::test(start_paused = true)]
 async fn independent_tracking_schedule_applies_changes_before_ready_ticks_without_resetting_polling(

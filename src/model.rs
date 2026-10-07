@@ -6,6 +6,8 @@ pub struct MonitoredRepository {
     pub name: String,
     pub baseline: Option<DateTime<Utc>>,
     pub cursor: Option<DateTime<Utc>>,
+    pub active: bool,
+    pub generation: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

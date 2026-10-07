@@ -20,9 +20,9 @@ function setup() {
   for(const [id,names] of [['add-subscription',['user_openid','qq_number_note']],['poll-interval',['seconds']],['tracking-interval',['seconds']],['add-repository',['repository']]]) {
     const form=byId(id); for(const name of names) { form.elements[name]=new Element('input'); form.append(form.elements[name]); } form.append(new Element('button'));
   }
-  const requests=[], intervals=[]; let rows=[], config={version:'v1',stage:'applied',error:null,saved:{repositories:['owner/repo'],poll_interval_seconds:60},applied:{repositories:['owner/repo'],poll_interval_seconds:60}};
+  const requests=[], intervals=[], confirmations=[]; let rows=[], config={version:'v1',stage:'applied',error:null,saved:{repositories:['owner/repo'],poll_interval_seconds:60},applied:{repositories:['owner/repo'],poll_interval_seconds:60}};
   let allowConfirm=true, pendingGate=null;
-  const sandbox={document:{getElementById:byId,createElement:tag=>new Element(tag),activeElement:null},AbortSignal:{timeout:()=>({})},confirm:()=>allowConfirm,setInterval:(fn,ms)=>intervals.push({fn,ms}),fetch:async(path,options)=>{
+  const sandbox={document:{getElementById:byId,createElement:tag=>new Element(tag),activeElement:null},AbortSignal:{timeout:()=>({})},confirm:text=>{confirmations.push(text);return allowConfirm;},setInterval:(fn,ms)=>intervals.push({fn,ms}),fetch:async(path,options)=>{
     requests.push({path,...options}); let data;
     if(options.method!=='GET' && pendingGate) await pendingGate;
     if(path.endsWith('/tracking')) { data=[]; } else if(path.endsWith('/config')) {
@@ -34,7 +34,7 @@ function setup() {
     return {ok:true,json:async()=>JSON.parse(JSON.stringify(data))};
   }};
   vm.runInNewContext(fs.readFileSync('src/admin.js','utf8'),sandbox);
-  return {byId,requests,intervals,setConfig:value=>{config=value;},setConfirm:value=>{allowConfirm=value;},holdWrites:()=>{let resolve;pendingGate=new Promise(done=>resolve=done);return ()=>{pendingGate=null;resolve();};}};
+  return {byId,requests,intervals,confirmations,setConfig:value=>{config=value;},setConfirm:value=>{allowConfirm=value;},holdWrites:()=>{let resolve;pendingGate=new Promise(done=>resolve=done);return ()=>{pendingGate=null;resolve();};}};
 }
 
 test('administrator adds, edits and confirms removal of a receiver without interpreting user text as HTML',async()=>{
@@ -99,4 +99,16 @@ test('tracking interval is saved independently from new issue polling', async()=
   const form=ui.byId('tracking-interval');form.elements.seconds.value='90';await form.elements.seconds.fire('input');await form.fire();
   const body=JSON.parse(ui.requests.filter(r=>r.method==='PATCH').at(-1).body);
   assert.equal(body.tracking_interval_seconds,90);assert.equal(body.poll_interval_seconds,undefined);
+});
+
+test('repository removal explains cancellation and accepted state distinguishes effective stopping from polling settings',async()=>{
+  const ui=setup();await settle();
+  ui.setConfig({version:'v2',stage:'accepted',saved:{repositories:['owner/a','owner/b'],poll_interval_seconds:60},applied:{repositories:['owner/a','owner/b','owner/old'],poll_interval_seconds:60}});
+  await ui.byId('reload-configuration').fire('click');
+  assert.match(ui.byId('configuration-stage').textContent,/已停止新发送/);
+  const remove=ui.byId('repositories').querySelectorAll('button').find(b=>b.textContent==='移除仓库');
+  await remove.fire('click');
+  assert.match(ui.confirmations.at(-1),/等待重试的新建 Issue 通知/);
+  assert.match(ui.confirmations.at(-1),/不补发停监期间/);
+  assert.match(ui.confirmations.at(-1),/已开始的请求可能仍送达/);
 });

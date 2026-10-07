@@ -94,7 +94,7 @@
   });
   function showConfiguration(data) {
     configData = data;
-    const stages = {saved:'已保存，等待热加载接受',accepted:'热加载已接受，等待当前任务结束后应用',applied:'监控任务已采用当前配置',rejected:'加载失败，继续使用上一份有效配置'};
+    const stages = {saved:'已保存，等待热加载接受',accepted:'仓库变更已生效，移除仓库已停止新发送；轮询设置等待当前任务结束后应用',applied:'监控任务已采用当前配置，仓库变更已生效',rejected:'加载失败，继续使用上一份有效配置'};
     byId('configuration-stage').textContent = (stages[data.stage] || '未知') + `。当前实际轮询间隔：${data.applied.poll_interval_seconds} 秒；追踪检查间隔：${data.applied.tracking_interval_seconds??300} 秒。` + (data.error ? ' '+data.error : '');
     const trackingForm=byId('tracking-interval');
     if(!trackingDirty && data.saved){trackingForm.elements.seconds.value=data.saved.tracking_interval_seconds??300;trackingVersion=data.version;}
@@ -120,7 +120,7 @@
         if (data.saved.repositories.length <= 1 || configurationBusy) return;
         operation(block,'repository-message',async()=>{
           const tracked=await request('/api/admin/tracking');const count=tracked.filter(row=>row.repository.toLowerCase()===repository.toLowerCase()).length;
-          if(!confirm(`移除 ${repository}？将取消该仓库 ${count} 个共享追踪及未发送动态；新建 Issue 通知继续投递。重新添加仓库不会恢复追踪。`))return;
+          if(!confirm(`移除 ${repository}？将取消该仓库未发送及等待重试的新建 Issue 通知、${count} 个共享追踪及其未发送动态。已开始的请求可能仍送达。重新添加从生效时间开始，不补发停监期间的 Issue，也不恢复旧追踪。`))return;
           await saveConfiguration(block,{version:data.version,repositories:data.saved.repositories.filter(name=>name!==repository)});
         });
       });

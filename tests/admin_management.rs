@@ -156,7 +156,7 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn repository_edits_follow_the_real_watcher_and_preserve_progress_and_queued_deliveries() {
+async fn repository_edits_follow_the_real_watcher_and_cancel_removed_repository_deliveries() {
     let f = Fixture::new().await;
     let path = f._dir.path().join("config.toml");
     let store = Store::open(&f.database).unwrap();
@@ -208,7 +208,7 @@ async fn repository_edits_follow_the_real_watcher_and_preserve_progress_and_queu
     );
     assert_eq!(
         store.pending_deliveries(chrono::Utc::now()).unwrap().len(),
-        1
+        0
     );
     let version = f.config().await["version"].clone();
     assert_eq!(
@@ -221,7 +221,7 @@ async fn repository_edits_follow_the_real_watcher_and_preserve_progress_and_queu
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(store.get_cursor("owner/repo").unwrap(), Some(baseline));
+    assert_eq!(store.get_cursor("owner/repo").unwrap(), None);
     let version = f.config().await["version"].clone();
     assert_eq!(
         f.edit(json!({"version":version,"repositories":[]}))

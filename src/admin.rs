@@ -31,7 +31,7 @@ impl Admin {
         health: Health,
     ) -> anyhow::Result<Self> {
         let store = Store::open(&active.database_path)?.with_health(health)?;
-        store.set_tracking_repositories(&active.repositories)?;
+        store.reconcile_repositories(&active.repositories, chrono::Utc::now())?;
         Ok(Self {
             store: Arc::new(Mutex::new(store)),
             config: crate::config_management::ConfigManagement::new(config_path, active.clone())?,
@@ -248,6 +248,7 @@ async fn tracking_add(
         ));
     }
     let now = chrono::Utc::now();
+    let period = admin.store.lock().unwrap().tracking_period(&repository)?;
     let snapshot = admin
         .tracking_source
         .snapshot(&repository, number)
@@ -257,7 +258,7 @@ async fn tracking_add(
         .store
         .lock()
         .unwrap()
-        .add_tracking(&repository, number, &snapshot, now)
+        .add_tracking_for_period(&repository, number, &snapshot, now, Some(period))
         .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok((
         if added {
