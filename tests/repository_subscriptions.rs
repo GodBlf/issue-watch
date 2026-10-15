@@ -450,3 +450,153 @@ async fn cancelling_then_readding_during_tracking_send_preserves_success_and_sup
     exercise_cancel_inflight(true, false).await;
     exercise_cancel_inflight(true, true).await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn deleting_target_removes_selection_and_health_distinguishes_empty_targets() {
+    let f = Fixture::new().await;
+    let alice = f.add("alice").await;
+    f.add("empty").await;
+    f.select(alice, &["o/a"]).await.error_for_status().unwrap();
+    let status: Value = f
+        .client
+        .get(format!("{}/api/status", f.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let binding = &status["components"]["qq_binding"]["details"];
+    assert_eq!(binding["subscriber_count"], 2);
+    assert_eq!(binding["subscribed_target_count"], 1);
+    assert_eq!(binding["repository_subscription_count"], 1);
+    let store = Store::open(&f.path).unwrap();
+    store.insert_notification(&issue("o/a", 1)).unwrap();
+    f.write(
+        reqwest::Method::DELETE,
+        &format!("/api/admin/subscriptions/{alice}"),
+        json!({}),
+    )
+    .await
+    .error_for_status()
+    .unwrap();
+    let rejoined = f.add("alice").await;
+    assert_ne!(alice, rejoined);
+    assert_eq!(
+        f.rows().await.iter().find(|r| r["id"] == rejoined).unwrap()["repositories"],
+        json!([])
+    );
+    assert_eq!(f.select(alice, &["o/a"]).await.status(), 404);
+    assert_eq!(deliver_pending(&store, &Sink::default()).await.unwrap(), 0);
+    store.bind_user("alice").unwrap();
+    assert!(store
+        .subscription_repositories(rejoined)
+        .unwrap()
+        .is_empty());
+}
+
+struct InterruptedSend {
+    base: String,
+    id: i64,
+    started: tokio::sync::Notify,
+}
+#[async_trait]
+impl MessageSink for InterruptedSend {
+    async fn send(&self, _: &str, _: &str) -> Result<(), SendError> {
+        let client = reqwest::Client::new();
+        for repos in [vec![], vec!["o/a"]] {
+            client
+                .put(format!(
+                    "{}/api/admin/subscriptions/{}/repositories",
+                    self.base, self.id
+                ))
+                .header("origin", &self.base)
+                .header("x-issue-watch-admin", "1")
+                .json(&json!({"repositories":repos}))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+        }
+        self.started.notify_one();
+        std::future::pending().await
+    }
+    async fn reply(&self, _: &str, _: &str, _: &str) -> Result<(), SendError> {
+        unreachable!()
+    }
+}
+#[tokio::test(start_paused = true)]
+async fn restart_after_cancelled_inflight_crash_does_not_resume_either_notification_kind() {
+    for tracking in [false, true] {
+        let f = Fixture::new().await;
+        let alice = f.add("alice").await;
+        f.select(alice, &["o/a"]).await.error_for_status().unwrap();
+        let mut store = Store::open(&f.path).unwrap();
+        if tracking {
+            f.write(
+                reqwest::Method::POST,
+                "/api/admin/tracking",
+                json!({"url":"https://github.com/o/a/issues/1"}),
+            )
+            .await
+            .error_for_status()
+            .unwrap();
+            f.source.event("interrupted", "comment");
+            check_tracked(&mut store, f.source.as_ref()).await.unwrap();
+        } else {
+            store.insert_notification(&issue("o/a", 1)).unwrap();
+        }
+        let interrupted = InterruptedSend {
+            base: f.base.clone(),
+            id: alice,
+            started: tokio::sync::Notify::new(),
+        };
+        // Dropping the send future models a crash before its QQ result can be finalized.
+        if tracking {
+            tokio::select! { _=deliver_tracking(&store,&interrupted)=>panic!("send unexpectedly finished"), _=interrupted.started.notified()=>{} }
+        } else {
+            tokio::select! { _=deliver_pending(&store,&interrupted)=>panic!("send unexpectedly finished"), _=interrupted.started.notified()=>{} }
+        }
+        assert_eq!(store.notification_summary().unwrap()["sending"], 1);
+        drop(store);
+        let store = Store::open(&f.path).unwrap();
+        store
+            .start_monitoring(&["o/a".into(), "o/b".into()], Utc::now())
+            .unwrap();
+        let sink = Sink::default();
+        deliver_pending(&store, &sink).await.unwrap();
+        deliver_tracking(&store, &sink).await.unwrap();
+        assert!(sink.0.lock().unwrap().is_empty());
+        assert_eq!(store.notification_summary().unwrap()["cancelled"], 1);
+        assert_eq!(store.notification_summary().unwrap()["sending"], 0);
+    }
+}
+
+#[tokio::test]
+async fn concurrent_global_removal_and_http_subscription_save_leave_no_removed_relation() {
+    let f = Fixture::new().await;
+    let alice = f.add("alice").await;
+    let store = Store::open(&f.path).unwrap();
+    // Exercise independent SQLite writers repeatedly; both successful-save and stale-save
+    // outcomes are valid, but neither may leave a relationship after removal commits.
+    for _ in 0..20 {
+        store
+            .reconcile_repositories(&["o/a".into(), "o/b".into()], Utc::now())
+            .unwrap();
+        f.select(alice, &["o/b"]).await.error_for_status().unwrap();
+        let path = f.path.clone();
+        let (saved, removed) = tokio::join!(
+            f.select(alice, &["o/a", "o/b"]),
+            tokio::task::spawn_blocking(move || {
+                Store::open(path)
+                    .unwrap()
+                    .reconcile_repositories(&["o/b".into()], Utc::now())
+                    .unwrap();
+            })
+        );
+        removed.unwrap();
+        assert!(saved.status() == 200 || saved.status() == 400);
+        assert_eq!(f.rows().await[0]["repositories"], json!(["o/b"]));
+    }
+}
