@@ -108,6 +108,7 @@ def main():
             run("start")
             status = wait_for(lambda status: status["components"]["qq_binding"]["details"]["subscriber_count"] == 1)
             assert api("/api/admin/subscriptions")[1][0]["qq_number_note"] == "persisted"
+            assert api("/api/admin/subscriptions")[1][0]["repositories"] == ["owner/another"]
             restarted = api("/api/admin/config")[1]
             assert restarted["applied"]["poll_interval_seconds"] == 5
             assert api("/api/admin/config", "PATCH", {"version": settings["version"], "poll_interval_seconds": 10})[0] == 409
@@ -125,7 +126,7 @@ def main():
             assert api("/api/admin/config", "PATCH", {"version": readonly["version"], "poll_interval_seconds": 7})[0] == 500
             assert api("/api/admin/config")[1]["applied"]["poll_interval_seconds"] == 5
             assert "poll_interval_seconds = 5" in config.read_text()
-            print("Production Compose smoke passed: loopback port, writable atomic config, management API and origins, reload/application, subscription/note/cursor/delivery persistence, redacted status; external network blocked.")
+            print("Production Compose smoke passed: loopback port, writable atomic config, management API and origins, reload/application, repository subscription/note/cursor/delivery persistence, redacted status; external network blocked.")
         finally:
             run("down")
 
