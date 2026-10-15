@@ -24,7 +24,7 @@ pub fn private_command(
 ) -> Result<Option<&'static str>> {
     match content.trim() {
         "/bind" => Ok(Some(if store.bind_user(user_openid)? {
-            "success"
+            "success：已绑定，尚未订阅仓库，请联系管理员配置仓库订阅"
         } else {
             "already bound"
         })),
@@ -418,11 +418,11 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         assert_eq!(
             private_command(&store, " /bind ", "openid-1").unwrap(),
-            Some("success")
+            Some("success：已绑定，尚未订阅仓库，请联系管理员配置仓库订阅")
         );
         assert_eq!(
             private_command(&store, "/bind", "openid-2").unwrap(),
-            Some("success")
+            Some("success：已绑定，尚未订阅仓库，请联系管理员配置仓库订阅")
         );
         assert_eq!(
             private_command(&store, "/bind", "openid-1").unwrap(),

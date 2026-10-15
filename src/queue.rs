@@ -139,6 +139,12 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         store.ensure_repository("o/r", Utc::now()).unwrap();
         store.bind_user("u").unwrap();
+        store
+            .replace_subscription_repositories(
+                store.subscriptions().unwrap()[0].id,
+                &["o/r".into()],
+            )
+            .unwrap();
         store.insert_notification(&issue(1)).unwrap();
         let fake = Fake {
             result: std::sync::Mutex::new(vec![Ok(())]),

@@ -231,7 +231,7 @@ impl Store {
                 params![issue.id, text, now.to_rfc3339()],
             )?;
             let batch = self.conn.last_insert_rowid();
-            self.conn.execute("INSERT INTO tracking_deliveries(batch_id,subscription_id) SELECT ?1,id FROM broadcast_subscriptions",[batch])?;
+            self.conn.execute("INSERT INTO tracking_deliveries(batch_id,subscription_id) SELECT ?1,s.id FROM broadcast_subscriptions s JOIN repository_subscriptions r ON r.subscription_id=s.id WHERE r.repository=?2 COLLATE NOCASE",params![batch,issue.repository])?;
         }
         self.conn.execute("UPDATE tracked_issues SET title=?2,last_success_at=CASE WHEN ?4 IS NULL THEN ?3 ELSE last_success_at END,error=?4 WHERE id=?1 AND active=1",params![issue.id,snapshot.title,now.to_rfc3339(),snapshot.partial_error])?;
         if fresh.iter().any(|event| event.kind == "closed") {
@@ -245,7 +245,7 @@ impl Store {
         &self,
         now: DateTime<Utc>,
     ) -> Result<Vec<TrackingDelivery>> {
-        let mut stmt=self.conn.prepare("SELECT d.batch_id,d.subscription_id,s.user_openid,b.text FROM tracking_deliveries d JOIN tracking_batches b ON b.id=d.batch_id JOIN tracked_issues t ON t.id=b.tracking_id JOIN tracking_repositories r ON r.name=t.repository JOIN broadcast_subscriptions s ON s.id=d.subscription_id WHERE d.state IN ('pending','retry') AND (d.next_attempt_at IS NULL OR d.next_attempt_at<=?1) ORDER BY b.id,s.id")?;
+        let mut stmt=self.conn.prepare("SELECT d.batch_id,d.subscription_id,s.user_openid,b.text FROM tracking_deliveries d JOIN tracking_batches b ON b.id=d.batch_id JOIN tracked_issues t ON t.id=b.tracking_id JOIN tracking_repositories r ON r.name=t.repository JOIN broadcast_subscriptions s ON s.id=d.subscription_id WHERE EXISTS(SELECT 1 FROM repository_subscriptions rs WHERE rs.subscription_id=d.subscription_id AND rs.repository=t.repository COLLATE NOCASE) AND d.state IN ('pending','retry') AND (d.next_attempt_at IS NULL OR d.next_attempt_at<=?1) ORDER BY b.id,s.id")?;
         let rows = stmt.query_map([now.to_rfc3339()], |row| {
             Ok(TrackingDelivery {
                 batch_id: row.get(0)?,
@@ -257,10 +257,10 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
     pub(crate) fn tracking_delivery_pending(&self, d: &TrackingDelivery) -> Result<bool> {
-        Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM tracking_deliveries d JOIN broadcast_subscriptions s ON s.id=d.subscription_id JOIN tracking_batches b ON b.id=d.batch_id JOIN tracked_issues t ON t.id=b.tracking_id JOIN tracking_repositories r ON r.name=t.repository WHERE d.batch_id=?1 AND d.subscription_id=?2 AND d.state IN ('pending','retry'))",params![d.batch_id,d.subscription_id],|row|row.get(0))?)
+        Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM tracking_deliveries d JOIN broadcast_subscriptions s ON s.id=d.subscription_id JOIN tracking_batches b ON b.id=d.batch_id JOIN tracked_issues t ON t.id=b.tracking_id JOIN tracking_repositories r ON r.name=t.repository WHERE d.batch_id=?1 AND d.subscription_id=?2 AND d.state IN ('pending','retry') AND EXISTS(SELECT 1 FROM repository_subscriptions rs WHERE rs.subscription_id=d.subscription_id AND rs.repository=t.repository COLLATE NOCASE))",params![d.batch_id,d.subscription_id],|row|row.get(0))?)
     }
     pub(crate) fn begin_tracking_delivery(&self, d: &TrackingDelivery) -> Result<bool> {
-        Ok(self.conn.execute("UPDATE tracking_deliveries SET state='sending' WHERE batch_id=?1 AND subscription_id=?2 AND state IN ('pending','retry') AND EXISTS(SELECT 1 FROM broadcast_subscriptions s WHERE s.id=subscription_id) AND EXISTS(SELECT 1 FROM tracking_batches b JOIN tracked_issues t ON t.id=b.tracking_id JOIN tracking_repositories r ON r.name=t.repository WHERE b.id=batch_id)", params![d.batch_id,d.subscription_id])? == 1)
+        Ok(self.conn.execute("UPDATE tracking_deliveries SET state='sending' WHERE batch_id=?1 AND subscription_id=?2 AND state IN ('pending','retry') AND EXISTS(SELECT 1 FROM broadcast_subscriptions s WHERE s.id=subscription_id) AND EXISTS(SELECT 1 FROM tracking_batches b JOIN tracked_issues t ON t.id=b.tracking_id JOIN tracking_repositories r ON r.name=t.repository JOIN repository_subscriptions rs ON rs.repository=t.repository COLLATE NOCASE AND rs.subscription_id=tracking_deliveries.subscription_id WHERE b.id=batch_id)", params![d.batch_id,d.subscription_id])? == 1)
     }
     pub(crate) fn finish_tracking_delivery(
         &self,

@@ -17,6 +17,43 @@
   let configurationSequence = 0;
   let repositoryRenderKey = null;
   const noteDrafts = new Map();
+  const repositoryDrafts = new Map();
+  function repositoryPicker(row, choices) {
+    const form = document.createElement('form');
+    const selected = new Set(repositoryDrafts.get(row.id) || row.repositories || []);
+    const search = document.createElement('input'); search.type = 'search'; search.placeholder = '搜索可订阅仓库'; search.setAttribute?.('aria-label','搜索可订阅仓库');
+    const all = document.createElement('button'); all.type = 'button'; all.textContent = '全选';
+    const clear = document.createElement('button'); clear.type = 'button'; clear.textContent = '清空';
+    const options = document.createElement('div');
+    const summary = document.createElement('p');
+    const save = document.createElement('button'); save.textContent = '保存仓库订阅';
+    const remember = () => { repositoryDrafts.set(row.id,[...selected]); markDirty(form,true); };
+    function render() {
+      summary.textContent = selected.size ? `已选择 ${selected.size} 个仓库` : '未订阅任何仓库';
+      options.replaceChildren();
+      const names = [...new Set([...choices,...selected])];
+      for (const name of names.filter(name=>name.toLowerCase().includes(search.value.toLowerCase()))) {
+        const label = document.createElement('label');
+        const check = document.createElement('input'); check.type = 'checkbox'; check.checked = selected.has(name);
+        check.addEventListener('change',()=>{ if(check.checked)selected.add(name);else selected.delete(name);remember();summary.textContent=selected.size?`已选择 ${selected.size} 个仓库`:'未订阅任何仓库'; });
+        const text = document.createElement('span'); text.textContent = name + (choices.includes(name)?'':'（已不可用，请取消选择）');
+        label.append(check,text); options.append(label);
+      }
+    }
+    search.addEventListener('input',render);
+    all.addEventListener('click',()=>{ selected.clear(); choices.forEach(name=>selected.add(name)); remember();render(); });
+    clear.addEventListener('click',()=>{ selected.clear();remember();render(); });
+    form.append(summary,search,all,clear,options,save); markDirty(form,repositoryDrafts.has(row.id)); render();
+    form.addEventListener('submit',event=>{
+      event.preventDefault();
+      operation(form,'subscription-message',async()=>{
+        await request(`/api/admin/subscriptions/${row.id}/repositories`,'PUT',{repositories:[...selected]});
+        repositoryDrafts.delete(row.id);markDirty(form,false);
+        byId('subscription-message').textContent='仓库订阅已生效；取消的积压不会恢复，已开始的请求可能仍送达。';
+      });
+    });
+    return form;
+  }
   async function request(path, method = 'GET', body) {
     const response = await fetch(path, {method, cache:'no-store', signal:AbortSignal.timeout(8000),
       headers: method === 'GET' ? {} : {'Content-Type':'application/json','X-Issue-Watch-Admin':'1'},
@@ -30,16 +67,16 @@
     if (subscriptionLoading || subscriptionWrites) return;
     subscriptionLoading = true;
     try {
-      const allRows = await request('/api/admin/subscriptions');
-      const rows=listPage('subscription',allRows,row=>row.user_openid+' '+(row.qq_number_note||''));
+      const [allRows,choices] = await Promise.all([request('/api/admin/subscriptions'),request('/api/admin/repositories')]);
+      const rows=listPage('subscription',allRows,row=>row.user_openid+' '+(row.qq_number_note||'')+' '+(row.repositories||[]).join(' '));
       if (subscriptionWrites) return;
       const container = byId('subscriptions');
       container.replaceChildren();
-      if (!rows.length) container.textContent = '尚无广播接收者。';
+      if (!rows.length) container.textContent = '尚无通知目标。';
       for (const row of rows) {
         const block = document.createElement('div'); block.className = 'component';
         const identity = document.createElement('p');
-        identity.textContent = `订阅 #${row.id} · ${row.user_openid} · QQ 号备注：${row.qq_number_note || '未填写'}`;
+        identity.textContent = `通知目标 #${row.id} · ${row.user_openid} · QQ 号备注：${row.qq_number_note || '未填写'}`;
         const form = document.createElement('form');
         const noteLabel = document.createElement('label'); noteLabel.textContent = 'QQ 号备注（选填） ';
         const note = document.createElement('input'); note.value = noteDrafts.has(row.id) ? noteDrafts.get(row.id) : row.qq_number_note || ''; note.maxLength = 256;
@@ -59,11 +96,12 @@
           if (!confirm(`移除 ${row.user_openid}？未发送通知将取消，备注将删除；正在发出的请求可能仍送达。对方可重新 /bind，旧积压不会恢复。`)) return;
           operation(form, 'subscription-message', async () => {
             await request(`/api/admin/subscriptions/${row.id}`, 'DELETE');
-            noteDrafts.delete(row.id); markDirty(form,false);
-            byId('subscription-message').textContent = '已移除订阅。'; await refreshSubscriptions();
+            noteDrafts.delete(row.id); repositoryDrafts.delete(row.id); markDirty(form,false);
+            byId('subscription-message').textContent = '已移除通知目标及全部仓库订阅。'; await refreshSubscriptions();
           });
         });
-        block.append(identity, form); container.append(block);
+        const subscribed = document.createElement('p'); subscribed.textContent = row.repositories?.length ? `订阅 ${row.repositories.length} 个仓库：${row.repositories.join('、')}` : '未订阅任何仓库';
+        block.append(identity, form, subscribed, repositoryPicker(row,choices)); container.append(block);
       }
     } catch (error) { byId('subscription-message').textContent = '接收者刷新失败：'+error.message; }
     finally { subscriptionLoading = false; }
@@ -88,7 +126,7 @@
       const data = await request('/api/admin/subscriptions', 'POST', {
         user_openid:form.elements.user_openid.value.trim(), qq_number_note:form.elements.qq_number_note.value.trim()});
       form.reset(); markDirty(form,false);
-      byId('subscription-message').textContent = data.added ? '已添加；不补发历史通知。' : '已存在相同接收者，原备注保持不变。';
+      byId('subscription-message').textContent = data.added ? '已添加通知目标，尚未订阅任何仓库；请配置仓库订阅。' : '已存在相同接收者，原备注保持不变。';
       await refreshSubscriptions();
     });
   });
@@ -120,7 +158,7 @@
         if (data.saved.repositories.length <= 1 || configurationBusy) return;
         operation(block,'repository-message',async()=>{
           const tracked=await request('/api/admin/tracking');const count=tracked.filter(row=>row.repository.toLowerCase()===repository.toLowerCase()).length;
-          if(!confirm(`移除 ${repository}？将取消该仓库未发送及等待重试的新建 Issue 通知、${count} 个共享追踪及其未发送动态。已开始的请求可能仍送达。重新添加从生效时间开始，不补发停监期间的 Issue，也不恢复旧追踪。`))return;
+          if(!confirm(`移除 ${repository}？将取消该仓库未发送及等待重试的新建 Issue 通知、${count} 个共享追踪及其未发送动态。已开始的请求可能仍送达。所有用户对此仓库的订阅将清除。重新添加从生效时间开始，不补发停监期间的 Issue，也不恢复旧追踪或个人订阅。`))return;
           await saveConfiguration(block,{version:data.version,repositories:data.saved.repositories.filter(name=>name!==repository)});
         });
       });

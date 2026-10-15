@@ -27,7 +27,14 @@ impl QqHealth {
         Self(health)
     }
     pub fn refresh_queue(&self, store: &Store) -> Result<()> {
-        let subscriber_count = store.bound_users()?.len();
+        let subscriptions = store.subscriptions()?;
+        let subscriber_count = subscriptions.len();
+        let subscribed_target_count = subscriptions
+            .iter()
+            .filter(|s| !s.repositories.is_empty())
+            .count();
+        let repository_subscription_count: usize =
+            subscriptions.iter().map(|s| s.repositories.len()).sum();
         let bound = subscriber_count > 0;
         self.0.observe(
             "qq_binding",
@@ -36,7 +43,7 @@ impl QqHealth {
             } else {
                 HealthStatus::Warning
             },
-            json!({"bound":bound,"subscriber_count":subscriber_count}),
+            json!({"bound":bound,"subscriber_count":subscriber_count,"subscribed_target_count":subscribed_target_count,"repository_subscription_count":repository_subscription_count}),
         );
         let counts = store.notification_summary()?;
         let status = if counts["permanent_failed"].as_u64().unwrap_or(0) > 0 {

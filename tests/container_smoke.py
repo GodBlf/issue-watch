@@ -94,6 +94,9 @@ def main():
             wait_for(lambda settings: settings["stage"] == "applied" and settings["applied"]["poll_interval_seconds"] == 5, lambda: api("/api/admin/config")[1])
             assert "poll_interval_seconds = 5" in config.read_text()
 
+            selected_id = api("/api/admin/subscriptions")[1][0]["id"]
+            assert api(f"/api/admin/subscriptions/{selected_id}/repositories", "PUT", {"repositories": ["owner/another"]})[0] == 200
+            assert api("/api/admin/subscriptions")[1][0]["repositories"] == ["owner/another"]
             run("stop")
             # A stopped deployment fixture with existing subscriptions and delivery progress.
             with closing(sqlite3.connect(database)) as db, db:

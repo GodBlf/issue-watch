@@ -48,8 +48,8 @@ async fn readding_starts_today_and_cancels_old_deliveries() {
     store
         .ensure_repositories(&active.repositories, day(1))
         .unwrap();
-    store.bind_user("alice").unwrap();
-    store.bind_user("bob").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
+    bind_and_subscribe(&store, "bob").unwrap();
     assert_eq!(
         discover_repository(&Issues, &store, "owner/a", day(2))
             .await
@@ -87,7 +87,7 @@ async fn readding_excludes_issues_created_during_removal() {
         .ensure_repositories(&active.repositories, day(1))
         .unwrap();
     store.set_cursor("owner/a", day(3)).unwrap();
-    store.bind_user("alice").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
     let mut reload = ConfigReloader::new(&path, active);
     std::fs::write(&path, "repositories = ['owner/b']").unwrap();
     reload.check(&store, day(3)).unwrap();
@@ -99,7 +99,12 @@ async fn readding_excludes_issues_created_during_removal() {
             .unwrap(),
         1
     );
-    assert_eq!(store.pending_deliveries(day(9)).unwrap()[0].issue.number, 8);
+    assert!(store.pending_deliveries(day(9)).unwrap().is_empty());
+    assert!(store
+        .recorded_notifications()
+        .unwrap()
+        .iter()
+        .any(|i| i.number == 8));
 }
 
 struct RemoveDuringSend {
@@ -140,7 +145,7 @@ async fn removal_during_send_cancels_batch_and_records_inflight_success() {
         store
             .reconcile_repositories(&["owner/a".into(), "owner/b".into()], day(1))
             .unwrap();
-        store.bind_user("alice").unwrap();
+        bind_and_subscribe(&store, "alice").unwrap();
         discover_repository(&Issues, &store, "owner/a", day(2))
             .await
             .unwrap();
@@ -203,7 +208,7 @@ async fn old_response_cannot_enter_readded_period_or_advance_its_cursor() {
     store
         .reconcile_repositories(&["owner/a".into(), "owner/b".into()], day(1))
         .unwrap();
-    store.bind_user("alice").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
     assert_eq!(
         discover_repository(&ReaddDuringRequest { database }, &store, "owner/a", day(2))
             .await
@@ -267,7 +272,7 @@ async fn tracking_removal_cancels_old_requests_and_inflight_failure_without_revi
     let mut store = Store::open(&database).unwrap();
     let names = vec!["owner/a".into(), "owner/b".into()];
     store.reconcile_repositories(&names, day(1)).unwrap();
-    store.bind_user("alice").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
     store
         .add_tracking("owner/a", 1, &tracking_snapshot(), day(1))
         .unwrap();
@@ -296,6 +301,7 @@ async fn tracking_removal_cancels_old_requests_and_inflight_failure_without_revi
         0
     );
     assert_eq!(*sink.calls.lock().unwrap(), 0);
+    bind_and_subscribe(&store, "alice").unwrap();
     store
         .add_tracking("owner/a", 1, &tracking_snapshot(), day(7))
         .unwrap();
@@ -348,7 +354,7 @@ async fn startup_recovers_interrupted_claims_but_opening_a_connection_does_not()
     let store = Store::open(&database).unwrap();
     let names = vec!["owner/a".into(), "owner/b".into()];
     store.start_monitoring(&names, day(1)).unwrap();
-    store.bind_user("alice").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
     discover_repository(&Issues, &store, "owner/a", day(2))
         .await
         .unwrap();
@@ -398,7 +404,7 @@ async fn rejected_repository_change_rolls_back_tracking_and_notification_cancell
     store
         .reconcile_repositories(&["owner/a".into(), "owner/b".into()], day(1))
         .unwrap();
-    store.bind_user("alice").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
     store
         .add_tracking("owner/a", 1, &tracking_snapshot(), day(1))
         .unwrap();
@@ -440,7 +446,7 @@ async fn accepted_removal_updates_health_before_main_consumes_config() {
     store
         .reconcile_repositories(&active.repositories, day(1))
         .unwrap();
-    store.bind_user("alice").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
     discover_repository(&Issues, &store, "owner/a", day(2))
         .await
         .unwrap();
@@ -502,7 +508,7 @@ async fn large_cancelled_batch_does_not_delay_other_repository_delivery() {
     store
         .reconcile_repositories(&["owner/a".into(), "owner/b".into()], day(1))
         .unwrap();
-    store.bind_user("alice").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
     for number in 1..=100 {
         store
             .insert_notification(&issue_watch::IssueNotification {
@@ -632,7 +638,7 @@ async fn readd_baseline_is_sampled_after_waiting_for_sqlite_write_lock() {
             })
         }
     }
-    store.bind_user("alice").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
     assert_eq!(
         discover_repository(&DuringLock(release_time), &store, "owner/a", Utc::now())
             .await
@@ -640,4 +646,18 @@ async fn readd_baseline_is_sampled_after_waiting_for_sqlite_write_lock() {
         0
     );
     assert!(store.pending_deliveries(Utc::now()).unwrap().is_empty());
+}
+
+// Existing delivery scenarios explicitly select their monitored repositories.
+fn bind_and_subscribe(store: &Store, user: &str) -> anyhow::Result<bool> {
+    let added = store.bind_user(user)?;
+    let repos = store.active_repositories()?;
+    let id = store
+        .subscriptions()?
+        .into_iter()
+        .find(|s| s.user_openid == user)
+        .unwrap()
+        .id;
+    store.replace_subscription_repositories(id, &repos)?;
+    Ok(added)
 }

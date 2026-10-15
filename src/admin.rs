@@ -180,6 +180,40 @@ async fn update_note(
     }
     Ok(Json(json!({"updated":true})))
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RepositorySelection {
+    repositories: Vec<String>,
+}
+
+async fn repository_choices(State(admin): State<Admin>) -> ApiResult<Json<Vec<String>>> {
+    Ok(Json(admin.store.lock().unwrap().active_repositories()?))
+}
+
+async fn select_repositories(
+    State(admin): State<Admin>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    headers: HeaderMap,
+    Json(body): Json<RepositorySelection>,
+) -> ApiResult<Json<serde_json::Value>> {
+    verify_write(&headers)?;
+    let store = admin.store.lock().unwrap();
+    store
+        .replace_subscription_repositories(id, &body.repositories)
+        .map_err(|error| {
+            match error.downcast_ref::<crate::repository_subscriptions::SubscriptionEditError>() {
+                Some(crate::repository_subscriptions::SubscriptionEditError::NotFound) => {
+                    ApiError(StatusCode::NOT_FOUND, error.to_string())
+                }
+                Some(_) => ApiError(StatusCode::BAD_REQUEST, error.to_string()),
+                None => error.into(),
+            }
+        })?;
+    Ok(Json(
+        json!({"repositories":store.subscription_repositories(id)?}),
+    ))
+}
+
 async fn remove_subscription(
     State(admin): State<Admin>,
     axum::extract::Path(id): axum::extract::Path<i64>,
@@ -360,6 +394,11 @@ pub fn router(admin: Admin) -> Router {
         .route(
             "/api/admin/subscriptions/{id}",
             axum::routing::patch(update_note).delete(remove_subscription),
+        )
+        .route("/api/admin/repositories", get(repository_choices))
+        .route(
+            "/api/admin/subscriptions/{id}/repositories",
+            axum::routing::put(select_repositories),
         )
         .route(
             "/api/admin/config",

@@ -140,7 +140,7 @@ async fn gateway_replies_to_commands_without_blocking_heartbeats_or_losing_bindi
     assert_eq!(user, "alice");
     assert_eq!(
         body,
-        json!({"content":"success","msg_id":"bind-alice","msg_type":0,"msg_seq":1})
+        json!({"content":"success：已绑定，尚未订阅仓库，请联系管理员配置仓库订阅","msg_id":"bind-alice","msg_type":0,"msg_seq":1})
     );
     assert_eq!(
         Store::open(&path).unwrap().bound_users().unwrap(),
@@ -155,7 +155,7 @@ async fn gateway_replies_to_commands_without_blocking_heartbeats_or_losing_bindi
         receive(&mut received).await,
         (
             "bob".into(),
-            json!({"content":"success","msg_id":"bind-bob","msg_type":0,"msg_seq":1})
+            json!({"content":"success：已绑定，尚未订阅仓库，请联系管理员配置仓库订阅","msg_id":"bind-bob","msg_type":0,"msg_seq":1})
         )
     );
     commands
@@ -186,7 +186,10 @@ async fn gateway_replies_to_commands_without_blocking_heartbeats_or_losing_bindi
     commands
         .send(event("rebind-alice", "alice", "/bind"))
         .unwrap();
-    assert_eq!(receive(&mut received).await.1["content"], "success");
+    assert_eq!(
+        receive(&mut received).await.1["content"],
+        "success：已绑定，尚未订阅仓库，请联系管理员配置仓库订阅"
+    );
     commands
         .send(event(
             "track-denied",

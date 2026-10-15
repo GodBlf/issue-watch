@@ -21,20 +21,21 @@ function setup() {
     const form=byId(id); for(const name of names) { form.elements[name]=new Element('input'); form.append(form.elements[name]); } form.append(new Element('button'));
   }
   const requests=[], intervals=[], confirmations=[]; let rows=[], config={version:'v1',stage:'applied',error:null,saved:{repositories:['owner/repo'],poll_interval_seconds:60},applied:{repositories:['owner/repo'],poll_interval_seconds:60}};
-  let allowConfirm=true, pendingGate=null;
+  let allowConfirm=true, pendingGate=null, selectionError=false;
   const sandbox={document:{getElementById:byId,createElement:tag=>new Element(tag),activeElement:null},AbortSignal:{timeout:()=>({})},confirm:text=>{confirmations.push(text);return allowConfirm;},setInterval:(fn,ms)=>intervals.push({fn,ms}),fetch:async(path,options)=>{
     requests.push({path,...options}); let data;
+    if(selectionError && options.method==='PUT')return {ok:false,json:async()=>({error:'仓库已移除，请刷新'})};
     if(options.method!=='GET' && pendingGate) await pendingGate;
-    if(path.endsWith('/tracking')) { data=[]; } else if(path.endsWith('/config')) {
+    if(path==='/api/admin/repositories') { data=config.accepted?.repositories || config.applied.repositories; } else if(path.endsWith('/repositories') && options.method==='PUT') { rows.find(row=>path.includes('/'+row.id+'/')).repositories=JSON.parse(options.body).repositories; data={saved:true}; } else if(path.endsWith('/tracking')) { data=[]; } else if(path.endsWith('/config')) {
       if(options.method==='PATCH') { const body=JSON.parse(options.body); if(body.version!==config.version) return {ok:false,json:async()=>({error:'配置已变化，请刷新'})}; config={...config,version:'v2',stage:'saved',saved:{...config.saved,...body}}; }
       data=config;
-    } else if(options.method==='POST') { const body=JSON.parse(options.body); rows.push({id:1,...body}); data={added:true}; }
+    } else if(options.method==='POST') { const body=JSON.parse(options.body); rows.push({id:1,repositories:[],...body}); data={added:true}; }
     else if(options.method==='PATCH') { rows[0].qq_number_note=JSON.parse(options.body).qq_number_note; data={updated:true}; }
     else if(options.method==='DELETE') { rows=[]; data={removed:true}; } else data=rows;
     return {ok:true,json:async()=>JSON.parse(JSON.stringify(data))};
   }};
   vm.runInNewContext(fs.readFileSync('src/admin.js','utf8'),sandbox);
-  return {byId,requests,intervals,confirmations,setConfig:value=>{config=value;},setConfirm:value=>{allowConfirm=value;},holdWrites:()=>{let resolve;pendingGate=new Promise(done=>resolve=done);return ()=>{pendingGate=null;resolve();};}};
+  return {byId,requests,intervals,confirmations,failSelection:value=>{selectionError=value;},setConfig:value=>{config=value;},setConfirm:value=>{allowConfirm=value;},holdWrites:()=>{let resolve;pendingGate=new Promise(done=>resolve=done);return ()=>{pendingGate=null;resolve();};}};
 }
 
 test('administrator adds, edits and confirms removal of a receiver without interpreting user text as HTML',async()=>{
@@ -47,7 +48,7 @@ test('administrator adds, edits and confirms removal of a receiver without inter
   let remove=ui.byId('subscriptions').querySelectorAll('button').find(button=>button.textContent==='移除');
   ui.setConfirm(false); await remove.fire('click'); assert.equal(ui.requests.filter(request=>request.method==='DELETE').length,0);
   ui.setConfirm(true); await remove.fire('click'); assert.equal(ui.requests.filter(request=>request.method==='DELETE').length,1);
-  assert.equal(ui.byId('subscriptions').textContent,'尚无广播接收者。');
+  assert.equal(ui.byId('subscriptions').textContent,'尚无通知目标。');
   assert.ok(ui.requests.filter(request=>request.method!=='GET').every(request=>request.headers['X-Issue-Watch-Admin']==='1'));
 });
 
@@ -111,4 +112,40 @@ test('repository removal explains cancellation and accepted state distinguishes 
   assert.match(ui.confirmations.at(-1),/等待重试的新建 Issue 通知/);
   assert.match(ui.confirmations.at(-1),/不补发停监期间/);
   assert.match(ui.confirmations.at(-1),/已开始的请求可能仍送达/);
+});
+
+
+test('repository picker keeps hidden selections, selects all active repos and clears without deleting target',async()=>{
+  const ui=setup(); ui.setConfig({version:'v1',stage:'applied',saved:{repositories:['o/a','o/b']},applied:{repositories:['o/a','o/b']}}); await settle();
+  const add=ui.byId('add-subscription'); add.elements.user_openid.value='alice'; await add.fire();
+  const block=ui.byId('subscriptions').children[0];
+  const picker=block.querySelectorAll('form').find(form=>form.querySelectorAll('button').some(b=>b.textContent==='保存仓库订阅'));
+  assert.ok(picker,'target exposes a repository picker');
+  const search=picker.querySelectorAll('input').find(input=>input.type==='search');
+  let checks=picker.querySelectorAll('input').filter(input=>input.type==='checkbox');
+  checks[0].checked=true; await checks[0].fire('change');
+  search.value='o/b'; await search.fire('input');
+  checks=picker.querySelectorAll('input').filter(input=>input.type==='checkbox');
+  checks[0].checked=true; await checks[0].fire('change');
+  await picker.fire();
+  let writes=ui.requests.filter(r=>r.method==='PUT');
+  assert.deepEqual(JSON.parse(writes.at(-1).body).repositories,['o/a','o/b']);
+  let current=ui.byId('subscriptions').children[0].querySelectorAll('form').find(f=>f.querySelectorAll('button').some(b=>b.textContent==='保存仓库订阅'));
+  await current.querySelectorAll('button').find(b=>b.textContent==='清空').fire('click'); await current.fire();
+  writes=ui.requests.filter(r=>r.method==='PUT'); assert.deepEqual(JSON.parse(writes.at(-1).body).repositories,[]);
+  assert.equal(ui.requests.filter(r=>r.method==='DELETE').length,0);
+});
+
+
+test('repository save failure retains draft and select-all covers hidden active repositories',async()=>{
+  const ui=setup(); ui.setConfig({version:'v1',stage:'applied',saved:{repositories:['o/a','o/b']},applied:{repositories:['o/a','o/b']}}); await settle();
+  const add=ui.byId('add-subscription'); add.elements.user_openid.value='alice'; await add.fire();
+  const picker=()=>ui.byId('subscriptions').children[0].querySelectorAll('form').find(form=>form.querySelectorAll('button').some(b=>b.textContent==='保存仓库订阅'));
+  let form=picker(); const search=form.querySelectorAll('input').find(i=>i.type==='search');search.value='o/a';await search.fire('input');
+  await form.querySelectorAll('button').find(b=>b.textContent==='全选').fire('click');
+  ui.failSelection(true);await form.fire();
+  assert.match(ui.byId('subscription-message').textContent,/仓库已移除/);
+  form=picker();assert.equal(form.querySelectorAll('input').filter(i=>i.type==='checkbox'&&i.checked).length,2);
+  ui.failSelection(false);await form.fire();
+  assert.deepEqual(JSON.parse(ui.requests.filter(r=>r.method==='PUT').at(-1).body).repositories,['o/a','o/b']);
 });

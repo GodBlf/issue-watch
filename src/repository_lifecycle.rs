@@ -41,6 +41,9 @@ impl Store {
         self.replace_tracking_repositories(&canonical)?;
         self.conn.execute("UPDATE monitored_repositories SET active=0 WHERE NOT EXISTS(SELECT 1 FROM tracking_repositories r WHERE r.name=monitored_repositories.name COLLATE NOCASE)", [])?;
         self.conn.execute("UPDATE notification_deliveries SET state=CASE WHEN state='sending' THEN 'cancelled_inflight' ELSE 'cancelled' END,next_attempt_at=NULL,last_error='repository removed' WHERE state IN ('pending','retry','sending') AND EXISTS(SELECT 1 FROM monitored_repositories r WHERE r.name=notification_deliveries.repository COLLATE NOCASE AND r.active=0)", [])?;
+        self.conn.execute("DELETE FROM repository_subscriptions WHERE NOT EXISTS(SELECT 1 FROM monitored_repositories r WHERE r.name=repository_subscriptions.repository COLLATE NOCASE AND r.active=1)", [])?;
+        self.migrate_repository_subscriptions()?;
+        self.cancel_unsubscribed_deliveries()?;
         // Choose the period boundary under the write lock, immediately before committing.
         let accepted_at = clock().to_rfc3339();
         for name in new_periods {

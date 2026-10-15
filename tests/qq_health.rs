@@ -45,7 +45,7 @@ fn enqueue_and_binding_changes_are_visible_before_a_poll_finishes() {
         .unwrap()
         .with_health(health.clone())
         .unwrap();
-    store.bind_user("private_openid").unwrap();
+    bind_and_subscribe(&store, "private_openid").unwrap();
     store.insert_notification(&issue(1)).unwrap();
     let snapshot = health.snapshot();
     assert_eq!(
@@ -110,7 +110,7 @@ fn issue(number: u64) -> IssueNotification {
 async fn successful_send_does_not_hide_unresolved_permanent_failures() {
     let store = Store::open_in_memory().unwrap();
     store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
-    store.bind_user("u").unwrap();
+    bind_and_subscribe(&store, "u").unwrap();
     store.insert_notification(&issue(1)).unwrap();
     let health = Health::new(vec!["private".into()]);
     let qq = QqHealth::new(health.clone());
@@ -145,7 +145,7 @@ async fn successful_send_does_not_hide_unresolved_permanent_failures() {
 async fn auth_failure_is_explicit_and_disconnect_does_not_invalidate_http_send() {
     let store = Store::open_in_memory().unwrap();
     store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
-    store.bind_user("u").unwrap();
+    bind_and_subscribe(&store, "u").unwrap();
     store.insert_notification(&issue(1)).unwrap();
     let health = Health::new(vec![]);
     let qq = QqHealth::new(health.clone());
@@ -180,7 +180,7 @@ async fn retry_reason_and_queue_times_survive_restart_but_delivery_observation_d
     let path = dir.path().join("queue.sqlite");
     let store = Store::open(&path).unwrap();
     store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
-    store.bind_user("u").unwrap();
+    bind_and_subscribe(&store, "u").unwrap();
     store.insert_notification(&issue(1)).unwrap();
     let health = Health::new(vec![]);
     let qq = QqHealth::new(health.clone());
@@ -328,7 +328,7 @@ async fn body_timeout_is_retryable_and_visible_without_real_qq() {
     });
     let store = Store::open_in_memory().unwrap();
     store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
-    store.bind_user("u").unwrap();
+    bind_and_subscribe(&store, "u").unwrap();
     store.insert_notification(&issue(1)).unwrap();
     let health = Health::new(vec![]);
     let qq = QqHealth::new(health.clone());
@@ -404,4 +404,19 @@ async fn qq_protocol_error_is_not_reported_as_success_or_inferred_auth_failure()
         Err(SendError::Permanent(_))
     ));
     server.abort();
+}
+
+// Existing delivery scenarios explicitly select their monitored repositories.
+fn bind_and_subscribe(store: &Store, user: &str) -> anyhow::Result<bool> {
+    let added = store.bind_user(user)?;
+    store.ensure_repository("o/r", chrono::Utc::now())?;
+    let repos = store.active_repositories()?;
+    let id = store
+        .subscriptions()?
+        .into_iter()
+        .find(|s| s.user_openid == user)
+        .unwrap()
+        .id;
+    store.replace_subscription_repositories(id, &repos)?;
+    Ok(added)
 }

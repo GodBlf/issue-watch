@@ -34,7 +34,7 @@ async fn notes_can_be_cleared_and_old_subscription_ids_cannot_remove_rejoined_us
     );
     assert_eq!(f.subscriptions().await[0]["qq_number_note"], Value::Null);
     let store = Store::open(&f.database).unwrap();
-    store.bind_user("other").unwrap();
+    bind_and_subscribe(&store, "other").unwrap();
     store
         .insert_notification(&issue_watch::IssueNotification {
             repository: "owner/repo".into(),
@@ -65,7 +65,7 @@ async fn notes_can_be_cleared_and_old_subscription_ids_cannot_remove_rejoined_us
             .collect::<Vec<_>>(),
         ["other"]
     );
-    store.bind_user("openid-a").unwrap();
+    bind_and_subscribe(&store, "openid-a").unwrap();
     assert_eq!(
         f.client
             .delete(&path)
@@ -163,7 +163,7 @@ async fn repository_edits_follow_the_real_watcher_and_cancel_removed_repository_
     let baseline = chrono::Utc::now() - chrono::Duration::hours(1);
     store.ensure_repository("owner/repo", baseline).unwrap();
     store.set_cursor("owner/repo", baseline).unwrap();
-    store.bind_user("existing").unwrap();
+    bind_and_subscribe(&store, "existing").unwrap();
     store
         .insert_notification(&issue_watch::IssueNotification {
             repository: "owner/repo".into(),
@@ -443,4 +443,18 @@ async fn administrator_adds_a_persistent_subscription_without_overwriting_a_dupl
             .status(),
         403
     );
+}
+
+// Existing delivery scenarios explicitly select their monitored repositories.
+fn bind_and_subscribe(store: &Store, user: &str) -> anyhow::Result<bool> {
+    let added = store.bind_user(user)?;
+    let repos = store.active_repositories()?;
+    let id = store
+        .subscriptions()?
+        .into_iter()
+        .find(|s| s.user_openid == user)
+        .unwrap()
+        .id;
+    store.replace_subscription_repositories(id, &repos)?;
+    Ok(added)
 }

@@ -173,7 +173,7 @@ async fn comments_broadcast_once_to_discovery_recipients_and_manual_cancel_drops
     let f = Fixture::new().await;
     let added = f.add().await;
     let mut store = Store::open(&f.path).unwrap();
-    store.bind_user("alice").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
     let at = Utc::now() + chrono::Duration::seconds(1);
     f.source.0.lock().unwrap().activities = vec![
         activity("old", "comment", at - chrono::Duration::days(1)),
@@ -182,7 +182,7 @@ async fn comments_broadcast_once_to_discovery_recipients_and_manual_cancel_drops
     issue_watch::tracking::check_tracked(&mut store, f.source.as_ref())
         .await
         .unwrap();
-    store.bind_user("bob").unwrap();
+    bind_and_subscribe(&store, "bob").unwrap();
     let sink = Sink::default();
     issue_watch::tracking::deliver_tracking(&store, &sink)
         .await
@@ -257,7 +257,7 @@ async fn starting_second_uses_event_baseline_and_new_close_ends_tracking() {
     f.source.0.lock().unwrap().activities = vec![activity("history", "comment", at)];
     f.add().await;
     let mut store = Store::open(&f.path).unwrap();
-    store.bind_user("alice").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
     let start = store.tracked_issues().unwrap()[0].started_at;
     let second = DateTime::from_timestamp(start.timestamp(), 0).unwrap();
     f.source
@@ -284,7 +284,7 @@ async fn close_then_reopen_ends_tracking_but_final_notification_survives_restart
     let f = Fixture::new().await;
     f.add().await;
     let mut store = Store::open(&f.path).unwrap();
-    store.bind_user("alice").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
     let at = Utc::now() + chrono::Duration::seconds(1);
     f.source.0.lock().unwrap().activities = vec![activity("close", "closed", at)];
     issue_watch::tracking::check_tracked(&mut store, f.source.as_ref())
@@ -348,7 +348,7 @@ async fn backend_grants_independent_command_permissions_and_revocation_keeps_sha
     .unwrap()
     .unwrap()
     .contains("修复崩溃"));
-    store.bind_user("alice").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
     store.unbind_user("alice").unwrap();
     assert!(store.tracking_permissions("alice").unwrap().can_add);
     f.write(
@@ -374,7 +374,7 @@ async fn accepted_repository_removal_cancels_tracking_and_new_issue_deliveries()
     let f = Fixture::new().await;
     f.add().await;
     let mut store = Store::open(&f.path).unwrap();
-    store.bind_user("alice").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
     f.source.0.lock().unwrap().activities = vec![activity(
         "pending",
         "comment",
@@ -455,7 +455,7 @@ async fn final_batch_excludes_activity_after_the_first_close() {
     let f = Fixture::new().await;
     f.add().await;
     let mut store = Store::open(&f.path).unwrap();
-    store.bind_user("alice").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
     let at = Utc::now() + chrono::Duration::seconds(1);
     let mut late = activity("late", "comment", at + chrono::Duration::seconds(1));
     late.text = "不应该投递的关闭后评论".into();
@@ -475,7 +475,7 @@ async fn admin_browser_preview() {
     let f = Fixture::new().await;
     f.add().await;
     let store = Store::open(&f.path).unwrap();
-    store.bind_user("preview-user").unwrap();
+    bind_and_subscribe(&store, "preview-user").unwrap();
     store
         .set_tracking_permissions("preview-user", true, false)
         .unwrap();
@@ -487,7 +487,7 @@ async fn failed_check_keeps_tracking_and_recovers_missed_activity_after_restart(
     let f = Fixture::new().await;
     f.add().await;
     let mut store = Store::open(&f.path).unwrap();
-    store.bind_user("alice").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
     f.source.1.store(true, std::sync::atomic::Ordering::SeqCst);
     issue_watch::tracking::check_tracked(&mut store, f.source.as_ref())
         .await
@@ -543,8 +543,8 @@ async fn partial_delivery_retries_only_failed_recipients_after_restart() {
     let f = Fixture::new().await;
     f.add().await;
     let mut store = Store::open(&f.path).unwrap();
-    store.bind_user("alice").unwrap();
-    store.bind_user("bob").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
+    bind_and_subscribe(&store, "bob").unwrap();
     let now = Utc::now();
     f.source.0.lock().unwrap().activities = vec![activity(
         "retry",
@@ -569,4 +569,18 @@ async fn partial_delivery_retries_only_failed_recipients_after_restart() {
         .unwrap();
     assert_eq!(*sink.messages.lock().unwrap(), ["alice", "bob", "bob"]);
     assert_eq!(store.notification_summary().unwrap()["retrying"], 0);
+}
+
+// Existing delivery scenarios explicitly select their monitored repositories.
+fn bind_and_subscribe(store: &Store, user: &str) -> anyhow::Result<bool> {
+    let added = store.bind_user(user)?;
+    let repos = store.active_repositories()?;
+    let id = store
+        .subscriptions()?
+        .into_iter()
+        .find(|s| s.user_openid == user)
+        .unwrap()
+        .id;
+    store.replace_subscription_repositories(id, &repos)?;
+    Ok(added)
 }

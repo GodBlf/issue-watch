@@ -10,6 +10,7 @@ pub mod qq_health;
 pub mod queue;
 pub mod reload;
 mod repository_lifecycle;
+pub mod repository_subscriptions;
 pub mod store;
 pub mod tracking;
 mod tracking_store;

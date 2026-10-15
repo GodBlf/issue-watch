@@ -15,6 +15,7 @@ pub struct Subscription {
     pub id: i64,
     pub user_openid: String,
     pub qq_number_note: Option<String>,
+    pub repositories: Vec<String>,
 }
 
 pub struct Store {
@@ -124,6 +125,7 @@ impl Store {
                 [],
             )?;
         }
+        self.init_repository_subscriptions()?;
         transaction.commit()?;
         Ok(())
     }
@@ -237,7 +239,7 @@ impl Store {
         let changed = self.conn.execute("INSERT OR IGNORE INTO issue_notifications(repository, number, title, author, created_at, url, state, enqueued_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'pending',?7)", params![issue.repository, issue.number, issue.title, issue.author, issue.created_at.to_rfc3339(), issue.url,now])?;
         if changed == 1 {
             self.conn.execute("INSERT INTO notification_deliveries(subscription_id,repository,number,state,enqueued_at)
-                SELECT id,?1,?2,'pending',?3 FROM broadcast_subscriptions",
+                SELECT s.id,?1,?2,'pending',?3 FROM broadcast_subscriptions s JOIN repository_subscriptions r ON r.subscription_id=s.id WHERE r.repository=?1 COLLATE NOCASE",
                 params![issue.repository,issue.number,now])?;
         }
         transaction.commit()?;
@@ -261,6 +263,7 @@ impl Store {
             ON n.repository=d.repository AND n.number=d.number
             JOIN broadcast_subscriptions s ON s.id=d.subscription_id
             WHERE d.state IN ('pending','retry') AND (d.next_attempt_at IS NULL OR d.next_attempt_at<=?1)
+            AND EXISTS(SELECT 1 FROM repository_subscriptions rs WHERE rs.subscription_id=d.subscription_id AND rs.repository=d.repository COLLATE NOCASE)
             AND EXISTS(SELECT 1 FROM monitored_repositories r WHERE r.name=d.repository COLLATE NOCASE AND r.active=1)
             ORDER BY n.created_at,n.repository,n.number,s.id")?;
         let rows = stmt.query_map([now.to_rfc3339()], |row| {
@@ -278,6 +281,7 @@ impl Store {
         Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM notification_deliveries d
             JOIN broadcast_subscriptions s ON s.id=d.subscription_id
             WHERE d.subscription_id=?1 AND d.repository=?2 AND d.number=?3 AND d.state IN ('pending','retry')
+            AND EXISTS(SELECT 1 FROM repository_subscriptions rs WHERE rs.subscription_id=d.subscription_id AND rs.repository=d.repository COLLATE NOCASE)
             AND EXISTS(SELECT 1 FROM monitored_repositories r WHERE r.name=d.repository COLLATE NOCASE AND r.active=1))",
             params![delivery.subscription_id,delivery.issue.repository,delivery.issue.number],
             |row| row.get(0))?)
@@ -285,7 +289,7 @@ impl Store {
 
     /// The atomic claim is the send-start boundary, serialized with repository removal.
     pub(crate) fn begin_delivery(&self, delivery: &PendingDelivery) -> Result<bool> {
-        Ok(self.conn.execute("UPDATE notification_deliveries SET state='sending' WHERE subscription_id=?1 AND repository=?2 AND number=?3 AND state IN ('pending','retry') AND EXISTS(SELECT 1 FROM broadcast_subscriptions s WHERE s.id=subscription_id) AND EXISTS(SELECT 1 FROM monitored_repositories r WHERE r.name=repository COLLATE NOCASE AND r.active=1)", params![delivery.subscription_id,delivery.issue.repository,delivery.issue.number])? == 1)
+        Ok(self.conn.execute("UPDATE notification_deliveries SET state='sending' WHERE subscription_id=?1 AND repository=?2 AND number=?3 AND state IN ('pending','retry') AND EXISTS(SELECT 1 FROM repository_subscriptions rs WHERE rs.subscription_id=notification_deliveries.subscription_id AND rs.repository=notification_deliveries.repository COLLATE NOCASE) AND EXISTS(SELECT 1 FROM broadcast_subscriptions s WHERE s.id=subscription_id) AND EXISTS(SELECT 1 FROM monitored_repositories r WHERE r.name=repository COLLATE NOCASE AND r.active=1)", params![delivery.subscription_id,delivery.issue.repository,delivery.issue.number])? == 1)
     }
 
     pub fn mark_sent(&self, delivery: &PendingDelivery) -> Result<()> {
@@ -348,6 +352,9 @@ impl Store {
                 id: row.get(0)?,
                 user_openid: row.get(1)?,
                 qq_number_note: row.get(2)?,
+                repositories: self
+                    .subscription_repositories(row.get(0)?)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -390,6 +397,8 @@ impl Store {
             ),
             [&identity],
         )?;
+        self.conn.execute(&format!("DELETE FROM repository_subscriptions WHERE subscription_id IN (SELECT id FROM broadcast_subscriptions WHERE {column}=?1)"), [&identity])?;
+        self.conn.execute(&format!("DELETE FROM repository_subscription_migration_targets WHERE subscription_id IN (SELECT id FROM broadcast_subscriptions WHERE {column}=?1)"), [&identity])?;
         let changed = self.conn.execute(
             &format!("DELETE FROM broadcast_subscriptions WHERE {column}=?1"),
             [&identity],
@@ -445,6 +454,12 @@ mod tests {
             url: "https://github.com/owner/repo/issues/1".into(),
         };
         store.bind_user("u").unwrap();
+        store
+            .replace_subscription_repositories(
+                store.subscriptions().unwrap()[0].id,
+                &["owner/repo".into()],
+            )
+            .unwrap();
         assert!(store.insert_notification(&issue).unwrap());
         assert!(!store.insert_notification(&issue).unwrap());
         assert_eq!(store.pending_deliveries(now).unwrap().len(), 1);

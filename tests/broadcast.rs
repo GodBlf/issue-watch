@@ -45,9 +45,11 @@ async fn broadcasts_and_retries_only_the_failed_recipient_after_restart() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("broadcast.sqlite");
     let store = Store::open(&path).unwrap();
-    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
-    store.bind_user("alice").unwrap();
-    store.bind_user("bob").unwrap();
+    store
+        .reconcile_repositories(&["o/r".into()], Utc::now())
+        .unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
+    bind_and_subscribe(&store, "bob").unwrap();
     store.insert_notification(&issue(1)).unwrap();
     let health = Health::new(vec![]);
     let qq = QqHealth::new(health.clone());
@@ -73,7 +75,9 @@ async fn broadcasts_and_retries_only_the_failed_recipient_after_restart() {
     assert_eq!(store.notification_summary().unwrap()["retrying"], 1);
     drop(store);
     let store = Store::open(&path).unwrap();
-    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
+    store
+        .reconcile_repositories(&["o/r".into()], Utc::now())
+        .unwrap();
     let pending = store
         .pending_deliveries(Utc::now() + Duration::minutes(1))
         .unwrap();
@@ -95,13 +99,15 @@ async fn broadcasts_and_retries_only_the_failed_recipient_after_restart() {
 #[test]
 fn late_joiners_do_not_receive_history_or_another_users_backlog() {
     let store = Store::open_in_memory().unwrap();
-    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
+    store
+        .reconcile_repositories(&["o/r".into()], Utc::now())
+        .unwrap();
     store.insert_notification(&issue(1)).unwrap(); // No subscribers yet.
-    assert!(store.bind_user("alice").unwrap());
+    assert!(bind_and_subscribe(&store, "alice").unwrap());
     assert!(store.pending_deliveries(Utc::now()).unwrap().is_empty());
     store.insert_notification(&issue(2)).unwrap();
-    assert!(store.bind_user("bob").unwrap());
-    assert!(!store.bind_user("alice").unwrap());
+    assert!(bind_and_subscribe(&store, "bob").unwrap());
+    assert!(!bind_and_subscribe(&store, "alice").unwrap());
     assert!(!store.insert_notification(&issue(2)).unwrap());
     assert_eq!(store.pending_deliveries(Utc::now()).unwrap().len(), 1);
     store.insert_notification(&issue(3)).unwrap();
@@ -118,9 +124,11 @@ fn late_joiners_do_not_receive_history_or_another_users_backlog() {
 #[test]
 fn unbinding_cancels_only_own_work_and_rebinding_does_not_restore_it() {
     let store = Store::open_in_memory().unwrap();
-    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
-    store.bind_user("alice").unwrap();
-    store.bind_user("bob").unwrap();
+    store
+        .reconcile_repositories(&["o/r".into()], Utc::now())
+        .unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
+    bind_and_subscribe(&store, "bob").unwrap();
     store.insert_notification(&issue(1)).unwrap();
     store.insert_notification(&issue(2)).unwrap();
     let snapshot = store.pending_deliveries(Utc::now()).unwrap();
@@ -134,7 +142,7 @@ fn unbinding_cancels_only_own_work_and_rebinding_does_not_restore_it() {
     store.mark_sent(&snapshot[2]).unwrap();
     assert_eq!(store.notification_summary().unwrap()["permanent_failed"], 0);
     assert_eq!(store.notification_summary().unwrap()["pending"], 2);
-    store.bind_user("alice").unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
     assert!(store
         .pending_deliveries(Utc::now())
         .unwrap()
@@ -167,9 +175,11 @@ async fn a_recipient_that_leaves_during_a_batch_is_skipped() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("queue.sqlite");
     let store = Store::open(&path).unwrap();
-    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
-    store.bind_user("alice").unwrap();
-    store.bind_user("bob").unwrap();
+    store
+        .reconcile_repositories(&["o/r".into()], Utc::now())
+        .unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
+    bind_and_subscribe(&store, "bob").unwrap();
     store.insert_notification(&issue(1)).unwrap();
     let sink = UnbindingSink(path, Mutex::new(vec![]));
     let qq = QqHealth::new(Health::new(vec![]));
@@ -203,7 +213,9 @@ fn migrates_old_binding_and_delivery_results_once_without_resurrecting_subscript
     let path = dir.path().join("legacy.sqlite");
     legacy_database(&path, true);
     let store = Store::open(&path).unwrap();
-    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
+    store
+        .reconcile_repositories(&["o/r".into()], Utc::now())
+        .unwrap();
     assert_eq!(store.bound_users().unwrap(), ["original"]);
     assert_eq!(
         store
@@ -231,9 +243,11 @@ fn migrates_old_binding_and_delivery_results_once_without_resurrecting_subscript
     );
     drop(store);
     let store = Store::open(&path).unwrap();
-    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
+    store
+        .reconcile_repositories(&["o/r".into()], Utc::now())
+        .unwrap();
     assert_eq!(store.notification_summary().unwrap(), summary);
-    store.bind_user("newcomer").unwrap();
+    bind_and_subscribe(&store, "newcomer").unwrap();
     assert!(store
         .pending_deliveries(Utc::now())
         .unwrap()
@@ -242,7 +256,9 @@ fn migrates_old_binding_and_delivery_results_once_without_resurrecting_subscript
     store.unbind_user("original").unwrap();
     drop(store);
     let store = Store::open(&path).unwrap();
-    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
+    store
+        .reconcile_repositories(&["o/r".into()], Utc::now())
+        .unwrap();
     assert_eq!(store.bound_users().unwrap(), ["newcomer"]);
     assert!(store.pending_deliveries(Utc::now()).unwrap().is_empty());
     assert_eq!(store.notification_summary().unwrap()["permanent_failed"], 0);
@@ -254,8 +270,10 @@ fn legacy_history_without_a_binding_is_not_given_to_new_subscribers() {
     let path = dir.path().join("legacy.sqlite");
     legacy_database(&path, false);
     let store = Store::open(&path).unwrap();
-    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
-    store.bind_user("newcomer").unwrap();
+    store
+        .reconcile_repositories(&["o/r".into()], Utc::now())
+        .unwrap();
+    bind_and_subscribe(&store, "newcomer").unwrap();
     assert_eq!(store.recorded_notifications().unwrap().len(), 4);
     assert!(store.pending_deliveries(Utc::now()).unwrap().is_empty());
 }
@@ -265,9 +283,11 @@ fn recipient_creation_failure_rolls_back_issue_and_all_deliveries() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("queue.sqlite");
     let store = Store::open(&path).unwrap();
-    store.ensure_repository("o/r", chrono::Utc::now()).unwrap();
-    store.bind_user("alice").unwrap();
-    store.bind_user("bob").unwrap();
+    store
+        .reconcile_repositories(&["o/r".into()], Utc::now())
+        .unwrap();
+    bind_and_subscribe(&store, "alice").unwrap();
+    bind_and_subscribe(&store, "bob").unwrap();
     let db = rusqlite::Connection::open(&path).unwrap();
     db.execute_batch(
         "CREATE TRIGGER reject_bob BEFORE INSERT ON notification_deliveries
@@ -280,4 +300,18 @@ fn recipient_creation_failure_rolls_back_issue_and_all_deliveries() {
     db.execute_batch("DROP TRIGGER reject_bob").unwrap();
     assert!(store.insert_notification(&issue(1)).unwrap());
     assert_eq!(store.pending_deliveries(Utc::now()).unwrap().len(), 2);
+}
+
+// Existing delivery scenarios explicitly select their monitored repositories.
+fn bind_and_subscribe(store: &Store, user: &str) -> anyhow::Result<bool> {
+    let added = store.bind_user(user)?;
+    let repos = store.active_repositories()?;
+    let id = store
+        .subscriptions()?
+        .into_iter()
+        .find(|s| s.user_openid == user)
+        .unwrap()
+        .id;
+    store.replace_subscription_repositories(id, &repos)?;
+    Ok(added)
 }
