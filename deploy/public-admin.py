@@ -5,6 +5,8 @@
 then provisions production TLS; it never configures cloud firewall rules.
 """
 import argparse
+from contextlib import contextmanager
+import fcntl
 import ipaddress
 import os
 from pathlib import Path
@@ -31,7 +33,7 @@ def origin(ip):
 
 def render(ip,prefix=Path("/"),tls=True,http_port=80,https_port=443):
     webroot=prefix/"var/lib/issue-watch-acme"
-    certificate=prefix/"etc/letsencrypt/live/issue-watch-ip"
+    certificate=prefix/"var/lib/issue-watch-admin-tls/current"
     # Prefix is an administrative filesystem root, never a request parameter.
     for path in (webroot,certificate):
         if any(char in str(path) for char in '\n\r";$ {}'):
@@ -122,16 +124,69 @@ def preflight(args,site):
     if status!="401":
         raise ValueError("running application must reject anonymous sessions with HTTP 401")
 
+@contextmanager
+def activate_certificate(args):
+    # Certbot owns its live symlinks. Nginx uses an independent immutable copy,
+    # so a failed issuance/deployment cannot change its certificate on restart.
+    directory=args.prefix/"var/lib/issue-watch-admin-tls"
+    directory.mkdir(parents=True,exist_ok=True,mode=0o700)
+    current=directory/"current"
+    if current.exists() and not current.is_symlink():
+        raise ValueError("refusing to replace an unmanaged certificate directory")
+    previous=os.readlink(current) if current.is_symlink() else None
+    candidate=Path(tempfile.mkdtemp(prefix="release-",dir=directory))
+    link=directory/"candidate"
+    try:
+        source=args.prefix/"etc/letsencrypt/live/issue-watch-ip"
+        for name in ("fullchain.pem","privkey.pem"):
+            shutil.copyfile(source/name,candidate/name)
+            (candidate/name).chmod(0o600)
+        run("openssl","x509","-in",candidate/"fullchain.pem","-noout","-checkend","3600")
+        run("openssl","x509","-in",candidate/"fullchain.pem","-noout","-checkip",args.ip)
+        public_key=run("openssl","x509","-in",candidate/"fullchain.pem","-pubkey","-noout")
+        if public_key!=run("openssl","pkey","-in",candidate/"privkey.pem","-pubout"):
+            raise ValueError("certificate and private key do not match")
+        link.unlink(missing_ok=True)
+        link.symlink_to(candidate.name)
+        link.replace(current)
+        try:
+            yield
+        except Exception:
+            if previous is None:current.unlink(missing_ok=True)
+            else:
+                link.symlink_to(previous)
+                link.replace(current)
+            raise
+    except Exception:
+        shutil.rmtree(candidate)
+        raise
+    finally:
+        link.unlink(missing_ok=True)
+    # Retain the previous release for inspection/recovery, bound disk growth.
+    for release in directory.glob("release-*"):
+        if release.name not in (candidate.name,previous):
+            try:shutil.rmtree(release)
+            except OSError as error:
+                print(f"certificate deployed; unable to remove old release {release}: {error}",file=sys.stderr)
+
+def promote(args):
+    try:
+        with activate_certificate(args):
+            run("nginx","-t")
+            run("systemctl","reload","nginx")
+    except Exception:
+        # The on-disk pointer is restored before any recovery reload.
+        run("nginx","-t")
+        run("systemctl","reload","nginx")
+        raise
+
 def renewal(args):
     directory=args.prefix/"etc/systemd/system"
     hook=args.prefix/"usr/local/lib/issue-watch/reload-admin-certificate"
-    certificate=args.prefix/"etc/letsencrypt/live/issue-watch-ip/fullchain.pem"
+    script=args.prefix/"usr/local/lib/issue-watch/public-admin.py"
     write(hook,f'''#!/bin/sh
 set -eu
-/usr/bin/openssl x509 -in {certificate} -noout -checkend 3600
-/usr/bin/openssl x509 -in {certificate} -noout -checkip {args.ip}
-/usr/sbin/nginx -t
-/bin/systemctl reload nginx
+exec /usr/bin/python3 {script} promote --ip {args.ip} --prefix {args.prefix}
 ''',0o755)
     write(directory/"issue-watch-certbot.service",f'''[Unit]
 Description=Renew issue-watch public IP certificate
@@ -139,7 +194,7 @@ After=network-online.target nginx.service
 Wants=network-online.target
 [Service]
 Type=oneshot
-ExecStart={args.certbot} renew --cert-name issue-watch-ip --non-interactive --deploy-hook {hook}
+ExecStart={args.certbot} renew --cert-name issue-watch-ip --server https://acme-v02.api.letsencrypt.org/directory --non-interactive --deploy-hook {hook}
 ''')
     write(directory/"issue-watch-certbot.timer",'''[Unit]
 Description=Check issue-watch IP certificate renewal hourly
@@ -161,6 +216,10 @@ def install(args):
     site=args.prefix/"etc/nginx/conf.d/issue-watch-admin.conf"
     preflight(args,site)
     original=site.read_text() if site.exists() else None
+    renewal_files=[args.prefix/"usr/local/lib/issue-watch/reload-admin-certificate",
+                   args.prefix/"etc/systemd/system/issue-watch-certbot.service",
+                   args.prefix/"etc/systemd/system/issue-watch-certbot.timer"]
+    saved_renewal={path:(path.read_text(),path.stat().st_mode & 0o777) if path.exists() else None for path in renewal_files}
     webroot=args.prefix/"var/lib/issue-watch-acme"
     webroot.mkdir(parents=True,exist_ok=True)
     try:
@@ -169,20 +228,22 @@ def install(args):
         write(site,original or render(args.ip,args.prefix,tls=False))
         run("nginx","-t");run("systemctl","reload-or-restart","nginx")
         command=[args.certbot,"certonly","--webroot","--webroot-path",str(webroot),"--ip-address",args.ip,"--preferred-profile","shortlived","--cert-name","issue-watch-ip","--non-interactive","--agree-tos","--email",args.email]
-        run(*command,"--dry-run")
-        run(*command)
-        certificate=args.prefix/"etc/letsencrypt/live/issue-watch-ip/fullchain.pem"
-        run("openssl","x509","-in",certificate,"-noout","-checkend","3600")
-        run("openssl","x509","-in",certificate,"-noout","-checkip",args.ip)
-        renewal(args)
-        write(site,render(args.ip,args.prefix))
-        run("nginx","-t");run("systemctl","reload","nginx")
-        run("systemctl","daemon-reload")
-        run("systemctl","enable","--now","issue-watch-certbot.timer")
+        run(*command,"--dry-run","--server","https://acme-staging-v02.api.letsencrypt.org/directory")
+        run(*command,"--server","https://acme-v02.api.letsencrypt.org/directory")
+        with activate_certificate(args):
+            renewal(args)
+            write(site,render(args.ip,args.prefix))
+            run("nginx","-t");run("systemctl","reload","nginx")
+            run("systemctl","daemon-reload")
+            run("systemctl","enable","--now","issue-watch-certbot.timer")
     except Exception:
+        for path,saved in saved_renewal.items():
+            if saved is None:path.unlink(missing_ok=True)
+            else:write(path,*saved)
         if original is None:site.unlink(missing_ok=True)
         else:write(site,original)
         try:
+            run("systemctl","daemon-reload")
             run("nginx","-t");run("systemctl","reload","nginx")
         except subprocess.SubprocessError as recovery:
             print(f"Nginx configuration restored on disk but reload failed: {recovery}",file=sys.stderr)
@@ -191,7 +252,7 @@ def install(args):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action",choices=["render","install"])
+    parser.add_argument("action",choices=["render","install","promote"])
     parser.add_argument("--ip",required=True,type=public_ip)
     parser.add_argument("--prefix",type=Path,default=Path("/"))
     parser.add_argument("--http-port",type=int,default=80)
@@ -204,7 +265,15 @@ def main():
         if not 1<=args.http_port<=65535 or not 1<=args.https_port<=65535:
             raise ValueError("invalid port")
         print(render(args.ip,args.prefix,http_port=args.http_port,https_port=args.https_port),end="")
-    else:install(args)
+    else:
+        args.prefix=args.prefix.resolve()
+        # Installation and the renewal hook must not switch certificates together.
+        lock=args.prefix/"var/lib/issue-watch-admin-tls.lock"
+        lock.parent.mkdir(parents=True,exist_ok=True)
+        with lock.open("a") as handle:
+            fcntl.flock(handle,fcntl.LOCK_EX)
+            if args.action=="install":install(args)
+            else:promote(args)
 
 if __name__=="__main__":
     try:main()

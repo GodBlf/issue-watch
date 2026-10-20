@@ -41,7 +41,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='issue-watch-https-') as directory:
         root=Path(directory);http_port,https_port=port(),port()
         base=f'https://127.0.0.1:{https_port}'
-        cert=root/'etc/letsencrypt/live/issue-watch-ip';cert.mkdir(parents=True)
+        cert=root/'var/lib/issue-watch-admin-tls/current';cert.mkdir(parents=True)
         run('openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','2','-subj','/CN=127.0.0.1','-addext','subjectAltName=IP:127.0.0.1','-keyout',cert/'privkey.pem','-out',cert/'fullchain.pem')
         public=run('openssl','x509','-in',cert/'fullchain.pem','-pubkey','-noout').stdout
         der=run('openssl','pkey','-pubin','-outform','DER',input=public).stdout

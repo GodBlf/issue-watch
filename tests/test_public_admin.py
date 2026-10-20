@@ -36,6 +36,13 @@ if tool=='nginx' and '-t' in sys.argv and os.environ.get('FAIL_TLS'):
     site=pathlib.Path(os.environ['SYSTEM_PREFIX'])/'etc/nginx/conf.d/issue-watch-admin.conf'
     if site.exists() and 'listen 443 ssl' in site.read_text():sys.exit(1)
 if tool=='certbot' and '--dry-run' in sys.argv and os.environ.get('FAIL_STAGING'):sys.exit(1)
+if tool=='certbot' and 'certonly' in sys.argv and '--dry-run' not in sys.argv:
+    cert=pathlib.Path(os.environ['SYSTEM_PREFIX'])/'etc/letsencrypt/live/issue-watch-ip'
+    cert.mkdir(parents=True,exist_ok=True)
+    for name in ('fullchain.pem','privkey.pem'):(cert/name).write_text('new-'+name)
+if tool=='openssl' and os.environ.get('FAIL_CERTIFICATE'):sys.exit(1)
+if tool=='systemctl' and 'enable' in sys.argv and os.environ.get('FAIL_TIMER'):sys.exit(1)
+
 ''')
         fake.chmod(0o755)
         for name in ('nginx','certbot','systemctl','ss','curl','openssl'):(binaries/name).symlink_to(fake)
@@ -73,6 +80,38 @@ if tool=='certbot' and '--dry-run' in sys.argv and os.environ.get('FAIL_STAGING'
         self.assertEqual(site.read_text(),original)
         commands=[json.loads(line) for line in self.log.read_text().splitlines()]
         self.assertNotIn(['systemctl','enable','--now','issue-watch-certbot.timer'],commands)
+    def test_failed_reinstallation_keeps_previous_certificate_after_certbot_replaces_lineage(self):
+        self.assertEqual(self.install().returncode,0)
+        site=self.prefix/'etc/nginx/conf.d/issue-watch-admin.conf'
+        original=site.read_text()
+        certificate=next(line.strip().split()[1].rstrip(';') for line in original.splitlines() if line.strip().startswith('ssl_certificate '))
+        Path(certificate).write_text('previous-good-certificate')
+        result=self.install(FAIL_TIMER='1')
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(site.read_text(),original)
+        self.assertEqual(Path(certificate).read_text(),'previous-good-certificate')
+    def test_issuance_pins_staging_and_production_ca(self):
+        result=self.install()
+        self.assertEqual(result.returncode,0,result.stderr)
+        commands=[json.loads(line) for line in self.log.read_text().splitlines()]
+        issuance=[command for command in commands if command[0]=='certbot' and 'certonly' in command]
+        self.assertIn('https://acme-staging-v02.api.letsencrypt.org/directory',issuance[0])
+        self.assertIn('https://acme-v02.api.letsencrypt.org/directory',issuance[1])
+    def test_renewal_keeps_deployed_certificate_when_candidate_is_invalid(self):
+        result=self.install()
+        self.assertEqual(result.returncode,0,result.stderr)
+        current=self.prefix/'var/lib/issue-watch-admin-tls/current'
+        old_certificate=(current/'fullchain.pem').read_bytes()
+        lineage=self.prefix/'etc/letsencrypt/live/issue-watch-ip'
+        (lineage/'fullchain.pem').write_text('invalid renewed certificate')
+        result=subprocess.run([sys.executable,str(SCRIPT),'promote','--ip','8.8.8.8','--prefix',str(self.prefix)],env=dict(self.env,FAIL_CERTIFICATE='1'),capture_output=True,text=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual((current/'fullchain.pem').read_bytes(),old_certificate)
+        # A later valid candidate replaces both files via the same renewal entry.
+        (lineage/'fullchain.pem').write_text('valid renewed certificate')
+        result=subprocess.run([sys.executable,str(SCRIPT),'promote','--ip','8.8.8.8','--prefix',str(self.prefix)],env=self.env,capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual((current/'fullchain.pem').read_text(),'valid renewed certificate')
     def test_uninitialized_password_does_not_enable_challenges_or_request_a_certificate(self):
         with sqlite3.connect(self.app/'data/issue-watch.sqlite3') as db:db.execute('DELETE FROM admin_credentials')
         result=self.install()

@@ -63,7 +63,7 @@ sudo python3 /usr/local/lib/issue-watch/public-admin.py install \
 
 ## 续期与验收
 
-Let's Encrypt IP 证书有效 160 小时，必须持续保留 80 的挑战路径。安装器启用 `issue-watch-certbot.timer`，每小时加随机延迟检查一次，开机补执行错过的检查；Certbot 在到达续期窗口时续期。成功后 hook 验证证书 IP、有效期及 Nginx 配置，再 reload。状态和错误可通过 systemd/journal 检查，本期不增加外部告警渠道。
+Let's Encrypt IP 证书有效 160 小时，必须持续保留 80 的挑战路径。安装器启用 `issue-watch-certbot.timer`，每小时加随机延迟检查一次，开机补执行错过的检查；Certbot 在到达续期窗口时续期。成功后 hook 将证书和私钥复制到独立的只读发布目录，验证 IP、有效期、密钥配对及 Nginx 配置，再 reload。Nginx 使用 `/var/lib/issue-watch-admin-tls/current`，不直接跟随 Certbot 的 live 链接；安装或续期失败时恢复原证书引用及配置，后续重启也不会加载失败候选。保留上一份证书副本供排查；私钥仅 root 可读。安装器显式指定 Let’s Encrypt 测试和生产 ACME 地址，避免系统默认 CA 配置影响签发。状态和错误可通过 systemd/journal 检查，本期不增加外部告警渠道。
 
 ```bash
 sudo systemctl status issue-watch-certbot.timer issue-watch-certbot.service
