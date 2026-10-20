@@ -112,3 +112,6 @@ Status: ready-for-agent
 - Let's Encrypt IP 证书截至调查时已正式可用，准确有效期为 160 小时，因此自动续期是必要依赖，而不是可选优化。依据：[正式可用公告](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability)、[Certbot IP 证书指引](https://letsencrypt.org/2026/03/11/shorter-certs-certbot)、[验证方式与端口要求](https://letsencrypt.org/docs/challenge-types/)。
 - 尚未连接线上；80/443 是否占用、安全组和防火墙规则、代理现状及工具版本需实施时先检查。这些是部署前置检查，不代表已验证可用，也不能以关闭鉴权或忽略证书错误规避。
 - 本规格发布于项目约定的本地 Markdown issue tracker，标记为 `ready-for-agent`；不自动拆分实施工单、不代表已上线，也不自动启动实施。
+
+
+2026-10-20 部署修订：使用者明确选择保留目标机现有 Caddy 站点，并让 Caddy 承载新增 IP HTTPS 入口，替代专用 Nginx 的代理实现；认证、端口、证书及恢复边界保持不变。实施与线上验收见 [部署记录](../../docs/deployments/2026-10-20-public-admin.md)。
