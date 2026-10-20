@@ -1,6 +1,6 @@
 # 公网管理员入口
 
-访问地址为 `https://172.197.176.142/`，无需域名、额外子路径或 SSH 隧道。应用与数据库仍由原生产 Compose 管理；宿主机 Nginx 终止 TLS，再转发至 `127.0.0.1:8081`。80 端口仅提供 ACME 挑战文件，其他 HTTP 路径返回 404；公网禁止访问内部健康路径和应用端口。
+访问地址为 `https://172.197.176.142/`，无需域名、额外子路径或 SSH 隧道。应用与数据库仍由原生产 Compose 管理；宿主机 Nginx 或既有 Caddy 终止 TLS，再转发至 `127.0.0.1:8081`。80 端口仅提供 ACME 挑战文件，其他 HTTP 路径返回 404；公网禁止访问内部健康路径和应用端口。
 
 ## 升级与初始化
 
@@ -51,6 +51,19 @@ sudo python3 /usr/local/lib/issue-watch/public-admin.py install \
 
 安装器检查版本、未知站点、端口、应用 Origin、已初始化的密码以及匿名认证请求确实返回 401。首次安装先启用仅挑战文件的 HTTP 站点，通过 ACME 测试环境验证，再签发生产证书；验证证书 IP、有效期和 Nginx 配置后启用 HTTPS。失败时恢复原代理配置，不开放临时匿名管理。安装器使用 root 拥有的专用配置、证书重载脚本和 systemd 续期服务；`--prefix` 只用于隔离文件系统测试，正常部署使用默认根目录。
 
+## 已有 Caddy 的服务器
+
+目标服务器现有 Caddy 为 `xxh.malaysiawest.cloudapp.azure.com` 提供服务，保留此站点，使用同一 80/443 接入新增 IP 管理入口。无需安装或启动 Nginx；仍需 Python venv、Certbot 5.4 以上、OpenSSL、iproute2 与 curl。安装前备份原 `/etc/caddy/Caddyfile`，确认 IP 尚未配置为其他站点：
+
+```bash
+sudo python3 /usr/local/lib/issue-watch/public-admin.py install \
+  --proxy caddy --ip 172.197.176.142 --email '<联系邮箱>'
+```
+
+安装器向原 Caddyfile 添加 `/etc/caddy/issue-watch-admin.Caddyfile` 的 import；验证后 reload，不修改现有域名的代理规则。仅该 IP 的 HTTP 提供挑战路径，其他 HTTP 请求返回 404；HTTPS 管理规则拒绝内部路径、覆盖转发头并限制请求大小。原域名的 HTTP/HTTPS 行为保持原配置。
+
+Caddy 由非 root 服务用户运行，独立证书目录为 root:caddy 0750，证书与私钥为 root:caddy 0640；其他用户不可读取。Certbot 的原始私钥权限不变。续期 hook 保留 `--proxy caddy`，验证配置并重载 Caddy；失败恢复旧证书引用，安装失败同时恢复原 Caddyfile。排障使用 `caddy validate --config /etc/caddy/Caddyfile` 和 `journalctl -u caddy`。
+
 ## 登录与撤销
 
 浏览器打开 HTTPS 地址，在登录页输入管理员密码。所有管理 API 都验证会话，写请求还需匹配显式配置的 Origin，并携带现有 `X-Issue-Watch-Admin: 1`；该固定请求头本身没有授权能力。认证操作为 `POST /api/auth/login`、`POST /api/auth/logout` 和 `GET /api/auth/session`。登录正文只包含 `password`。
@@ -63,7 +76,7 @@ sudo python3 /usr/local/lib/issue-watch/public-admin.py install \
 
 ## 续期与验收
 
-Let's Encrypt IP 证书有效 160 小时，必须持续保留 80 的挑战路径。安装器启用 `issue-watch-certbot.timer`，每小时加随机延迟检查一次，开机补执行错过的检查；Certbot 在到达续期窗口时续期。成功后 hook 将证书和私钥复制到独立的只读发布目录，验证 IP、有效期、密钥配对及 Nginx 配置，再 reload。Nginx 使用 `/var/lib/issue-watch-admin-tls/current`，不直接跟随 Certbot 的 live 链接；安装或续期失败时恢复原证书引用及配置，后续重启也不会加载失败候选。保留上一份证书副本供排查；私钥仅 root 可读。安装器显式指定 Let’s Encrypt 测试和生产 ACME 地址，避免系统默认 CA 配置影响签发。状态和错误可通过 systemd/journal 检查，本期不增加外部告警渠道。
+Let's Encrypt IP 证书有效 160 小时，必须持续保留 80 的挑战路径。安装器启用 `issue-watch-certbot.timer`，每小时加随机延迟检查一次，开机补执行错过的检查；Certbot 在到达续期窗口时续期。成功后 hook 将证书和私钥复制到独立的只读发布目录，验证 IP、有效期、密钥配对及 Nginx 配置，再 reload。Nginx 使用 `/var/lib/issue-watch-admin-tls/current`，不直接跟随 Certbot 的 live 链接；安装或续期失败时恢复原证书引用及配置，后续重启也不会加载失败候选。保留上一份证书副本供排查；Nginx 模式私钥仅 root 可读；Caddy 模式额外允许专用 caddy 服务组读取。安装器显式指定 Let’s Encrypt 测试和生产 ACME 地址，避免系统默认 CA 配置影响签发。状态和错误可通过 systemd/journal 检查，本期不增加外部告警渠道。
 
 ```bash
 sudo systemctl status issue-watch-certbot.timer issue-watch-certbot.service

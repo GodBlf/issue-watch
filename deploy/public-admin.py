@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the dedicated public admin proxy. Requires Nginx and Certbot >=5.4.
+"""Install the public admin proxy. Requires Nginx or Caddy and Certbot >=5.4.
 
 `render` is read-only. `install` checks local prerequisites, tests ACME staging,
 then provisions production TLS; it never configures cloud firewall rules.
@@ -7,6 +7,7 @@ then provisions production TLS; it never configures cloud firewall rules.
 import argparse
 from contextlib import contextmanager
 import fcntl
+import grp
 import ipaddress
 import os
 from pathlib import Path
@@ -71,15 +72,62 @@ def render(ip,prefix=Path("/"),tls=True,http_port=80,https_port=443):
 '''
     return config
 
+def render_caddy(ip,prefix=Path("/"),tls=True,http_port=80,https_port=443):
+    render(ip,prefix)  # Apply the same administrative path validation.
+    host=f"[{ip}]" if ":" in ip else ip
+    certificate=prefix/"var/lib/issue-watch-admin-tls/current"
+    config=MARKER+f'''http://{host}:{http_port} {{
+    handle /.well-known/acme-challenge/* {{
+        root * {prefix}/var/lib/issue-watch-acme
+        file_server
+    }}
+    handle {{
+        respond 404
+    }}
+}}
+'''
+    if tls:
+        config+=f'''https://{host}:{https_port} {{
+    tls {certificate}/fullchain.pem {certificate}/privkey.pem
+    handle /internal/* {{
+        respond 404
+    }}
+    handle {{
+        request_body {{
+            max_size 16KB
+        }}
+        reverse_proxy 127.0.0.1:8081 {{
+            header_up Host {host}
+            header_up X-Real-IP {{remote_host}}
+            header_up X-Forwarded-For {{remote_host}}
+            header_up X-Forwarded-Proto https
+        }}
+    }}
+}}
+'''
+    return config
+
+def proxy_config(args,tls=True):
+    renderer=render_caddy if args.proxy=="caddy" else render
+    return renderer(args.ip,args.prefix,tls,args.http_port,args.https_port)
+
+def validate_proxy(args):
+    if args.proxy=="caddy":run("caddy","validate","--config",args.prefix/"etc/caddy/Caddyfile")
+    else:run("nginx","-t")
+
+def reload_proxy(args,initial=False):
+    run("systemctl","reload-or-restart" if initial else "reload",args.proxy)
+
 def run(*args):
     return subprocess.run([str(arg) for arg in args],check=True,capture_output=True,text=True,timeout=180).stdout.strip()
 
-def write(path,text,mode=0o644):
+def write(path,text,mode=0o644,owner=None):
     path.parent.mkdir(parents=True,exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="w",dir=path.parent,delete=False) as temporary:
         name=Path(temporary.name)
         temporary.write(text)
     try:
+        if owner is not None:os.chown(name,*owner)
         name.chmod(mode)
         name.replace(path)
     finally:
@@ -102,14 +150,21 @@ def preflight(args,site):
     if not match or tuple(map(int,match.groups()))<(5,4):
         raise ValueError("Certbot >=5.4 is required for IP webroot certificates")
     if site.is_symlink() or (site.exists() and not site.read_text().startswith(MARKER)):
-        raise ValueError("refusing to replace an unmanaged Nginx configuration")
-    configuration=subprocess.run(["nginx","-T"],capture_output=True,text=True,check=True,timeout=30)
-    for part in re.split(r"# configuration file ",configuration.stdout+configuration.stderr)[1:]:
-        filename,_,content=part.partition(":\n")
-        if Path(filename)!=site and re.search(r"\bserver\s*\{",content):
-            raise ValueError(f"existing Nginx site requires manual review: {filename}")
+        raise ValueError("refusing to replace an unmanaged proxy configuration")
+    if args.proxy=="nginx":
+        configuration=subprocess.run(["nginx","-T"],capture_output=True,text=True,check=True,timeout=30)
+        for part in re.split(r"# configuration file ",configuration.stdout+configuration.stderr)[1:]:
+            filename,_,content=part.partition(":\n")
+            if Path(filename)!=site and re.search(r"\bserver\s*\{",content):
+                raise ValueError(f"existing Nginx site requires manual review: {filename}")
+    else:
+        main=args.prefix/"etc/caddy/Caddyfile"
+        if not main.is_file() or main.is_symlink():
+            raise ValueError("a regular existing Caddyfile is required")
+        validate_proxy(args)
+        grp.getgrnam("caddy")
     for line in run("ss","-ltnp").splitlines():
-        if re.search(r":(?:80|443)\s",line) and "nginx" not in line:
+        if re.search(r":(?:80|443)\s",line) and args.proxy not in line:
             raise ValueError("port 80 or 443 is occupied by another process")
     env_lines=(args.app_root/".env.local").read_text().splitlines()
     values=[line.split("=",1)[1].strip().strip('\"\'') for line in env_lines if line.startswith("ISSUE_WATCH_ADMIN_ORIGIN=")]
@@ -130,6 +185,9 @@ def activate_certificate(args):
     # so a failed issuance/deployment cannot change its certificate on restart.
     directory=args.prefix/"var/lib/issue-watch-admin-tls"
     directory.mkdir(parents=True,exist_ok=True,mode=0o700)
+    if args.proxy=="caddy":
+        directory.chmod(0o750)
+        os.chown(directory,0,grp.getgrnam("caddy").gr_gid)
     current=directory/"current"
     if current.exists() and not current.is_symlink():
         raise ValueError("refusing to replace an unmanaged certificate directory")
@@ -141,6 +199,13 @@ def activate_certificate(args):
         for name in ("fullchain.pem","privkey.pem"):
             shutil.copyfile(source/name,candidate/name)
             (candidate/name).chmod(0o600)
+        if args.proxy=="caddy":
+            group=grp.getgrnam("caddy").gr_gid
+            candidate.chmod(0o750)
+            os.chown(candidate,0,group)
+            for name in ("fullchain.pem","privkey.pem"):
+                (candidate/name).chmod(0o640)
+                os.chown(candidate/name,0,group)
         run("openssl","x509","-in",candidate/"fullchain.pem","-noout","-checkend","3600")
         run("openssl","x509","-in",candidate/"fullchain.pem","-noout","-checkip",args.ip)
         public_key=run("openssl","x509","-in",candidate/"fullchain.pem","-pubkey","-noout")
@@ -172,12 +237,12 @@ def activate_certificate(args):
 def promote(args):
     try:
         with activate_certificate(args):
-            run("nginx","-t")
-            run("systemctl","reload","nginx")
+            validate_proxy(args)
+            reload_proxy(args)
     except Exception:
         # The on-disk pointer is restored before any recovery reload.
-        run("nginx","-t")
-        run("systemctl","reload","nginx")
+        validate_proxy(args)
+        reload_proxy(args)
         raise
 
 def renewal(args):
@@ -186,11 +251,11 @@ def renewal(args):
     script=args.prefix/"usr/local/lib/issue-watch/public-admin.py"
     write(hook,f'''#!/bin/sh
 set -eu
-exec /usr/bin/python3 {script} promote --ip {args.ip} --prefix {args.prefix}
+exec /usr/bin/python3 {script} promote --ip {args.ip} --prefix {args.prefix} --proxy {args.proxy}
 ''',0o755)
     write(directory/"issue-watch-certbot.service",f'''[Unit]
 Description=Renew issue-watch public IP certificate
-After=network-online.target nginx.service
+After=network-online.target {args.proxy}.service
 Wants=network-online.target
 [Service]
 Type=oneshot
@@ -213,9 +278,13 @@ def install(args):
     args.app_root=args.app_root.resolve()
     if not Path(args.certbot).is_absolute():
         args.certbot=shutil.which(args.certbot) or args.certbot
-    site=args.prefix/"etc/nginx/conf.d/issue-watch-admin.conf"
+    site=args.prefix/("etc/caddy/issue-watch-admin.Caddyfile" if args.proxy=="caddy" else "etc/nginx/conf.d/issue-watch-admin.conf")
     preflight(args,site)
     original=site.read_text() if site.exists() else None
+    main=args.prefix/"etc/caddy/Caddyfile" if args.proxy=="caddy" else None
+    original_main=main.read_text() if main else None
+    main_stat=main.stat() if main else None
+    main_attributes=(main_stat.st_mode & 0o7777,(main_stat.st_uid,main_stat.st_gid)) if main_stat else ()
     renewal_files=[args.prefix/"usr/local/lib/issue-watch/reload-admin-certificate",
                    args.prefix/"etc/systemd/system/issue-watch-certbot.service",
                    args.prefix/"etc/systemd/system/issue-watch-certbot.timer"]
@@ -225,28 +294,33 @@ def install(args):
     try:
         # First boot serves only challenges. Reinstallation preserves an existing
         # TLS site until a replacement certificate has been obtained and checked.
-        write(site,original or render(args.ip,args.prefix,tls=False))
-        run("nginx","-t");run("systemctl","reload-or-restart","nginx")
+        write(site,original or proxy_config(args,tls=False))
+        if main:
+            directive=f"import {site}"
+            if directive not in original_main.splitlines():
+                write(main,original_main.rstrip()+"\n"+directive+"\n",*main_attributes)
+        validate_proxy(args);reload_proxy(args,initial=True)
         command=[args.certbot,"certonly","--webroot","--webroot-path",str(webroot),"--ip-address",args.ip,"--preferred-profile","shortlived","--cert-name","issue-watch-ip","--non-interactive","--agree-tos","--email",args.email]
         run(*command,"--dry-run","--server","https://acme-staging-v02.api.letsencrypt.org/directory")
         run(*command,"--server","https://acme-v02.api.letsencrypt.org/directory")
         with activate_certificate(args):
             renewal(args)
-            write(site,render(args.ip,args.prefix))
-            run("nginx","-t");run("systemctl","reload","nginx")
+            write(site,proxy_config(args))
+            validate_proxy(args);reload_proxy(args)
             run("systemctl","daemon-reload")
             run("systemctl","enable","--now","issue-watch-certbot.timer")
     except Exception:
         for path,saved in saved_renewal.items():
             if saved is None:path.unlink(missing_ok=True)
             else:write(path,*saved)
+        if main:write(main,original_main,*main_attributes)
         if original is None:site.unlink(missing_ok=True)
         else:write(site,original)
         try:
             run("systemctl","daemon-reload")
-            run("nginx","-t");run("systemctl","reload","nginx")
+            validate_proxy(args);reload_proxy(args)
         except subprocess.SubprocessError as recovery:
-            print(f"Nginx configuration restored on disk but reload failed: {recovery}",file=sys.stderr)
+            print(f"Proxy configuration restored on disk but reload failed: {recovery}",file=sys.stderr)
         raise
     print(f"HTTPS configured at {origin(args.ip)}/; run external acceptance checks before declaring it live.")
 
@@ -254,6 +328,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action",choices=["render","install","promote"])
     parser.add_argument("--ip",required=True,type=public_ip)
+    parser.add_argument("--proxy",choices=["nginx","caddy"],default="nginx")
     parser.add_argument("--prefix",type=Path,default=Path("/"))
     parser.add_argument("--http-port",type=int,default=80)
     parser.add_argument("--https-port",type=int,default=443)
@@ -264,7 +339,7 @@ def main():
     if args.action=="render":
         if not 1<=args.http_port<=65535 or not 1<=args.https_port<=65535:
             raise ValueError("invalid port")
-        print(render(args.ip,args.prefix,http_port=args.http_port,https_port=args.https_port),end="")
+        print(proxy_config(args),end="")
     else:
         args.prefix=args.prefix.resolve()
         # Installation and the renewal hook must not switch certificates together.

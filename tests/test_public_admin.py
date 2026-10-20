@@ -1,5 +1,6 @@
 """Deployment CLI boundary; no production server or CA is contacted."""
 import os
+import grp
 from pathlib import Path
 import subprocess
 import sys
@@ -45,10 +46,10 @@ if tool=='systemctl' and 'enable' in sys.argv and os.environ.get('FAIL_TIMER'):s
 
 ''')
         fake.chmod(0o755)
-        for name in ('nginx','certbot','systemctl','ss','curl','openssl'):(binaries/name).symlink_to(fake)
+        for name in ('nginx','caddy','certbot','systemctl','ss','curl','openssl'):(binaries/name).symlink_to(fake)
         self.env=dict(os.environ,PATH=str(binaries)+os.pathsep+os.environ['PATH'],COMMAND_LOG=str(self.log),SYSTEM_PREFIX=str(self.prefix))
-    def install(self,**env):
-        return subprocess.run([sys.executable,str(SCRIPT),'install','--ip','8.8.8.8','--email','admin@example.com','--prefix',str(self.prefix),'--app-root',str(self.app),'--certbot','certbot'],env=dict(self.env,**env),capture_output=True,text=True)
+    def install(self,proxy="nginx",**env):
+        return subprocess.run([sys.executable,str(SCRIPT),'install','--ip','8.8.8.8','--email','admin@example.com','--prefix',str(self.prefix),'--app-root',str(self.app),'--certbot','certbot','--proxy',proxy],env=dict(self.env,**env),capture_output=True,text=True)
     def test_install_tests_staging_before_production_and_enables_renewal(self):
         result=self.install()
         self.assertEqual(result.returncode,0,result.stderr)
@@ -130,6 +131,40 @@ if tool=='systemctl' and 'enable' in sys.argv and os.environ.get('FAIL_TIMER'):s
         self.assertNotIn("proxy_pass",http)
         self.assertIn("location / { return 404; }",http)
         self.assertIn("proxy_set_header X-Real-IP $remote_addr",result.stdout)
+    def test_caddy_proxy_uses_ip_tls_and_isolates_http_and_internal_paths(self):
+        result=subprocess.run([sys.executable,str(SCRIPT),'render','--proxy','caddy','--ip','203.0.113.10'],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('https://203.0.113.10',result.stdout)
+        self.assertIn('http://203.0.113.10',result.stdout)
+        self.assertIn('handle /internal/*',result.stdout)
+        self.assertIn('handle /.well-known/acme-challenge/*',result.stdout)
+        self.assertIn('header_up X-Real-IP {remote_host}',result.stdout)
+        self.assertIn('reverse_proxy 127.0.0.1:8081',result.stdout)
+    @unittest.skipUnless(os.geteuid()==0 and any(group.gr_name=='caddy' for group in grp.getgrall()),'requires root and Caddy service group')
+    def test_caddy_install_preserves_existing_site_and_configuration_permissions_on_failure(self):
+        main=self.prefix/'etc/caddy/Caddyfile'
+        main.parent.mkdir(parents=True)
+        original='existing.example.com {\n    reverse_proxy 127.0.0.1:8080\n}\n'
+        main.write_text(original)
+        main.chmod(0o640)
+        os.chown(main,0,grp.getgrnam('caddy').gr_gid)
+        previous=main.stat()
+        result=self.install(proxy='caddy',FAIL_STAGING='1')
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(main.read_text(),original)
+        self.assertEqual(main.stat().st_mode,previous.st_mode)
+        self.assertEqual(main.stat().st_gid,previous.st_gid)
+        result=self.install(proxy='caddy')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertTrue(main.read_text().startswith(original))
+        self.assertIn('import ',main.read_text())
+        self.assertEqual(main.stat().st_mode,previous.st_mode)
+        self.assertEqual(main.stat().st_gid,previous.st_gid)
+        key=self.prefix/'var/lib/issue-watch-admin-tls/current/privkey.pem'
+        self.assertEqual(key.stat().st_mode & 0o777,0o640)
+        self.assertEqual(key.stat().st_gid,previous.st_gid)
+        hook=(self.prefix/'usr/local/lib/issue-watch/reload-admin-certificate').read_text()
+        self.assertIn('--proxy caddy',hook)
     def test_non_ip_and_injection_are_rejected(self):
         for ip in ["example.com","203.0.113.10;include /tmp/evil;","0.0.0.0"]:
             result=subprocess.run([sys.executable,str(SCRIPT),"render","--ip",ip],capture_output=True,text=True)
