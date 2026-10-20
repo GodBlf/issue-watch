@@ -60,7 +60,7 @@ sudo python3 /usr/local/lib/issue-watch/public-admin.py install \
   --proxy caddy --ip 172.197.176.142 --email '<联系邮箱>'
 ```
 
-安装器向原 Caddyfile 添加 `/etc/caddy/issue-watch-admin.Caddyfile` 的 import；验证后 reload，不修改现有域名的代理规则。仅该 IP 的 HTTP 提供挑战路径，其他 HTTP 请求返回 404；HTTPS 管理规则拒绝内部路径、覆盖转发头并限制请求大小。原域名的 HTTP/HTTPS 行为保持原配置。
+安装器为无 SNI 的 IP 浏览器连接设置 `default_sni`（已有冲突配置时停止并要求人工检查），并向原 Caddyfile 添加 `/etc/caddy/issue-watch-admin.Caddyfile` 的 import；验证后 reload，不修改现有域名的代理规则。仅该 IP 的 HTTP 提供挑战路径，其他 HTTP 请求返回 404；HTTPS 管理规则拒绝内部路径、覆盖转发头并限制请求大小。原域名的 HTTP/HTTPS 行为保持原配置。
 
 Caddy 由非 root 服务用户运行，独立证书目录为 root:caddy 0750，证书与私钥为 root:caddy 0640；其他用户不可读取。Certbot 的原始私钥权限不变。续期 hook 保留 `--proxy caddy`，验证配置并重载 Caddy；失败恢复旧证书引用，安装失败同时恢复原 Caddyfile。排障使用 `caddy validate --config /etc/caddy/Caddyfile` 和 `journalctl -u caddy`。
 
@@ -82,7 +82,9 @@ Let's Encrypt IP 证书有效 160 小时，必须持续保留 80 的挑战路径
 sudo systemctl status issue-watch-certbot.timer issue-watch-certbot.service
 sudo systemctl list-timers issue-watch-certbot.timer
 sudo journalctl -u issue-watch-certbot.service
-sudo /opt/issue-watch-certbot/bin/certbot renew --cert-name issue-watch-ip --dry-run --run-deploy-hooks
+sudo /opt/issue-watch-certbot/bin/certbot renew --cert-name issue-watch-ip --dry-run \
+  --no-random-sleep-on-renew --run-deploy-hooks \
+  --deploy-hook /usr/local/lib/issue-watch/reload-admin-certificate
 curl -fsS http://127.0.0.1:8081/internal/status
 ```
 
@@ -97,7 +99,7 @@ curl -fsS http://127.0.0.1:8081/internal/status
 
 证书续期 dry-run、外部连通性和浏览器可信链必须在目标部署验证后才能称为已上线。本地测试不会申请生产证书。没有 Docker、Nginx 或公网条件的环境不能替代这些验证。
 
-开发验收可使用独立 Nginx、Chrome 和 Playwright，运行下列隔离烟测。它只绑定回环地址，启动真实管理 HTTP fixture，使用临时证书和测试专用信任验证 TLS IP、Cookie、双设备退出及密码重置；不启动 GitHub/QQ 监控任务，不接触生产 CA。测试先确认回环 8081 空闲，并在结束后停止所有临时进程：
+开发验收可使用独立 Nginx 或 Caddy、Chrome 和 Playwright，运行下列隔离烟测。它只绑定回环地址，启动真实管理 HTTP fixture，使用临时证书和测试专用信任验证 TLS IP、Cookie、双设备退出及密码重置；不启动 GitHub/QQ 监控任务，不接触生产 CA。测试先确认回环 8081 空闲，并在结束后停止所有临时进程：
 
 ```bash
 python3 tests/public_admin_https.py --nginx /absolute/path/to/nginx \
@@ -109,3 +111,5 @@ python3 tests/public_admin_https.py --nginx /absolute/path/to/nginx \
 续期失败检查 timer、journal、证书目录权限、80 挑战路径和云网络规则；修复后先 dry-run，再执行续期。证书过期、认证数据库不可读或代理配置错误时，保留 SSH 修复，不降级到 HTTP 或匿名管理。重载失败先检查 `nginx -t` 和 systemd 状态。
 
 怀疑凭据泄露时通过 SSH 重置密码，撤销全部会话。恢复旧数据库或旧镜像前先关闭公网代理的管理转发；恢复数据库可能复活旧会话，旧镜像也可能没有鉴权。按既有人工恢复策略保留失败数据和证据，确认运行的是支持鉴权的版本、重置密码并撤销所有会话后，才重新开放公网。不要自动回滚数据库。
+
+Caddy 模式的同一隔离验收使用 `--caddy /absolute/path/to/caddy` 替换 `--nginx`；同时验证无 SNI 的 IP TLS 连接。

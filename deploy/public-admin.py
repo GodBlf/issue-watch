@@ -107,6 +107,22 @@ def render_caddy(ip,prefix=Path("/"),tls=True,http_port=80,https_port=443):
 '''
     return config
 
+def caddy_main(original,site,ip):
+    # Browsers omit SNI for literal IPs. Select the IP certificate for those
+    # connections while preserving explicit-SNI selection for existing domains.
+    defaults=re.findall(r"(?m)^\s*default_sni\s+(\S+)\s*$",original)
+    if defaults and defaults!=[ip]:
+        raise ValueError("existing Caddy default_sni requires manual review")
+    if not defaults:
+        start=re.match(r"(?:\s|#[^\n]*(?:\n|$))*",original).end()
+        if original[start:start+1]=="{":
+            original=original[:start+1]+f"\n    default_sni {ip}\n"+original[start+1:]
+        else:
+            original=f"{{\n    default_sni {ip}\n}}\n"+original
+    directive=f"import {site}"
+    if directive not in original.splitlines():original=original.rstrip()+"\n"+directive+"\n"
+    return original
+
 def proxy_config(args,tls=True):
     renderer=render_caddy if args.proxy=="caddy" else render
     return renderer(args.ip,args.prefix,tls,args.http_port,args.https_port)
@@ -296,9 +312,7 @@ def install(args):
         # TLS site until a replacement certificate has been obtained and checked.
         write(site,original or proxy_config(args,tls=False))
         if main:
-            directive=f"import {site}"
-            if directive not in original_main.splitlines():
-                write(main,original_main.rstrip()+"\n"+directive+"\n",*main_attributes)
+            write(main,caddy_main(original_main,site,args.ip),*main_attributes)
         validate_proxy(args);reload_proxy(args,initial=True)
         command=[args.certbot,"certonly","--webroot","--webroot-path",str(webroot),"--ip-address",args.ip,"--preferred-profile","shortlived","--cert-name","issue-watch-ip","--non-interactive","--agree-tos","--email",args.email]
         run(*command,"--dry-run","--server","https://acme-staging-v02.api.letsencrypt.org/directory")

@@ -1,4 +1,4 @@
-"""Isolated HTTPS smoke: real Nginx, real Rust HTTP fixture, and a fresh Chrome.
+"""Isolated HTTPS smoke: real Nginx/Caddy, real Rust HTTP fixture, and a fresh Chrome.
 
 Uses an ephemeral local certificate pinned only in the test browser and trusted
 explicitly by the HTTP client. Does not contact a CA, GitHub, QQ or production.
@@ -29,7 +29,9 @@ def port():
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--nginx',required=True)
+    proxy_options=parser.add_mutually_exclusive_group(required=True)
+    proxy_options.add_argument('--nginx')
+    proxy_options.add_argument('--caddy')
     parser.add_argument('--chrome',required=True)
     parser.add_argument('--playwright',default='playwright')
     args=parser.parse_args()
@@ -46,10 +48,16 @@ def main():
         public=run('openssl','x509','-in',cert/'fullchain.pem','-pubkey','-noout').stdout
         der=run('openssl','pkey','-pubin','-outform','DER',input=public).stdout
         pin=base64.b64encode(hashlib.sha256(der).digest()).decode()
-        config=run('python3',REPO/'deploy/public-admin.py','render','--ip','127.0.0.1','--prefix',root,'--http-port',http_port,'--https-port',https_port,text=True).stdout
+        config=run('python3',REPO/'deploy/public-admin.py','render','--ip','127.0.0.1','--prefix',root,'--http-port',http_port,'--https-port',https_port,'--proxy','caddy' if args.caddy else 'nginx',text=True).stdout
         # Production listens publicly; the smoke fixture is restricted to loopback.
         for number in (http_port,https_port):
             config=config.replace(f'listen {number}',f'listen 127.0.0.1:{number}').replace(f'listen [::]:{number}',f'listen [::1]:{number}')
+        if args.caddy:
+            # Caddy, like Chrome, must support IP connections without TLS SNI.
+            # Add bind only to site blocks, leaving nested handlers unchanged.
+            config=config.replace(f'http://127.0.0.1:{http_port} {{',f'http://127.0.0.1:{http_port} {{\n    bind 127.0.0.1').replace(f'https://127.0.0.1:{https_port} {{',f'https://127.0.0.1:{https_port} {{\n    bind 127.0.0.1')
+            config='{\n    admin off\n    auto_https disable_redirects\n    default_sni 127.0.0.1\n}\n'+config
+            (root/'Caddyfile').write_text(config)
         (root/'site.conf').write_text(config)
         (root/'nginx.conf').write_text(f'pid {root}/nginx.pid; error_log {root}/error.log; events {{}} http {{ access_log off; include {root}/site.conf; }}')
         env=dict(os.environ,ISSUE_WATCH_BROWSER_FIXTURE_ROOT=str(root),ISSUE_WATCH_ADMIN_ORIGIN=base)
@@ -63,8 +71,13 @@ def main():
                     urllib.request.urlopen('http://127.0.0.1:8081/internal/status',timeout=1).close();break
                 except OSError:time.sleep(.1)
             else:raise RuntimeError('HTTP fixture did not start')
-            run(args.nginx,'-t','-p',root,'-c',root/'nginx.conf')
-            proxy=subprocess.Popen([args.nginx,'-p',str(root),'-c',str(root/'nginx.conf'),'-g','daemon off;'],stdout=log,stderr=log)
+            if args.caddy:
+                run(args.caddy,'validate','--config',root/'Caddyfile','--adapter','caddyfile')
+                command=[args.caddy,'run','--config',str(root/'Caddyfile'),'--adapter','caddyfile']
+            else:
+                run(args.nginx,'-t','-p',root,'-c',root/'nginx.conf')
+                command=[args.nginx,'-p',str(root),'-c',str(root/'nginx.conf'),'-g','daemon off;']
+            proxy=subprocess.Popen(command,stdout=log,stderr=log)
             context=ssl.create_default_context(cafile=str(cert/'fullchain.pem'))
             def status(url,**headers):
                 try:
