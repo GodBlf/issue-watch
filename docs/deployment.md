@@ -10,7 +10,7 @@ PR 自动执行格式检查、Rust 测试、部署入口测试和镜像构建验
 
 管理页面保存配置需要可写的配置目录挂载。升级已有服务器时，由管理员重新安装本仓库的生产 Compose（例如按原首次准备步骤运行 `install.sh`），将旧的只读配置目录挂载更新为可写；数据库、配置位置和受限部署密钥均不变。目录须允许镜像运行用户创建、替换文件，Linux 上原配置文件的属主、属组和权限会在页面保存时保留。不要将凭据文件移到可写配置目录；自动发布镜像不会替换服务器上由管理员安装的 Compose。
 
-生产管理入口继续使用回环端口 8081，经管理员 SSH 隧道访问，例如 `ssh -N -L 127.0.0.1:18080:127.0.0.1:8081 user@server`，浏览器打开 `http://127.0.0.1:18080/`。应使用允许端口转发的管理员 SSH 身份；专用部署密钥仍禁止 TCP 转发。写入失败请先检查是否安装了新 Compose、配置挂载是否可写及文件权限。管理操作不会调整服务启动/恢复策略或自动回滚数据库。
+生产应用仍只发布宿主机回环端口 8081，管理页面通过宿主机 HTTPS 代理访问，安装和登录恢复见 [公网管理员入口](public-admin.md)。升级时先更新服务器部署入口：新版本将无登录的内部健康检查迁移到 `/internal/status`，旧 `/api/status` 需要会话；更新镜像后须初始化管理员密码才能使用管理界面。
 
 在已有 `gh` 登录和可信 SSH 连接的管理员机器执行：
 
@@ -32,7 +32,7 @@ deploy ghcr.io/godblf/issue-watch@sha256:<64位小写十六进制摘要> <40位�
 
 脚本校验镜像摘要、当前主分支提交及镜像 revision 标签，先拉取镜像，再停当前实例并使用 SQLite backup API 制作一致性备份，验证备份完整性后启动新容器。首次迁移保留旧 systemd 定义和二进制，在新程序启动前禁用旧服务自动启动，避免失败后重启服务器启动不兼容的旧二进制。
 
-成功时保存 `deploy/current.json` 和对应备份位置。容器有自动重启策略；Docker 已配置开机启动。健康入口保持 `http://127.0.0.1:8081/api/status`，不占用 8080，不向公网开放。
+成功时保存 `deploy/current.json` 和对应备份位置。容器有自动重启策略；Docker 已配置开机启动。健康入口保持 `http://127.0.0.1:8081/internal/status`，不占用 8080，不向公网开放。
 
 验收要求目标容器运行、镜像引用匹配且状态接口成功响应，默认最多等待 120 秒。业务状态为未知或告警不会阻止部署，验收不会主动发送 QQ 消息。部署成功仅表示容器启动验收通过；真实权限、消息配额和通知投递仍通过既有健康网页观察。
 
@@ -41,7 +41,7 @@ deploy ghcr.io/godblf/issue-watch@sha256:<64位小写十六进制摘要> <40位�
 ```bash
 sudo cat /home/godblf/issue-watch/deploy/current.json
 sudo docker ps --filter label=com.docker.compose.project=issue-watch
-curl -fsS http://127.0.0.1:8081/api/status
+curl -fsS http://127.0.0.1:8081/internal/status
 systemctl is-enabled docker
 systemctl is-enabled issue-watch.service
 ```
@@ -52,7 +52,7 @@ systemctl is-enabled issue-watch.service
 
 备份位于 `backups/<UTC时间>-<唯一编号>/`，包含更新前 SQLite 数据库、目标版本及旧版本信息。失败日志可能包含运行细节，仅供服务器管理员查看，不自动上传 Actions。备份暂不自动清理，管理员应关注磁盘空间。
 
-人工恢复须先确认没有原服务或容器继续写入数据库，再保存失败后的数据库及可能存在的 WAL/SHM 文件。根据迁移兼容性决定继续使用当前数据库，还是恢复更新前的备份；恢复旧备份可能丢失更新后的通知投递记录并造成重复通知。
+人工恢复须先关闭公网代理的管理转发，再确认没有原服务或容器继续写入数据库，再保存失败后的数据库及可能存在的 WAL/SHM 文件。根据迁移兼容性决定继续使用当前数据库，还是恢复更新前的备份；恢复旧备份可能丢失更新后的通知投递记录并造成重复通知。
 
 需要恢复数据库时，将备份复制到临时文件，验证完整性后替换数据库；旧 WAL/SHM 应先移到失败数据保存目录，不能与恢复的主文件混用。恢复文件时保留原属主和权限。
 
@@ -66,15 +66,15 @@ sudo env ISSUE_WATCH_ROOT=/home/godblf/issue-watch ISSUE_WATCH_IMAGE='<旧镜像
   -f /home/godblf/issue-watch/deploy/compose.yml up -d --no-build
 ```
 
-验收恢复后的服务，更新 `deploy/current.json` 为实际运行版本，再由管理员移走恢复标记以允许下次自动部署。不要仅删除标记就自动重试，也不要在未处理数据库兼容性时直接启动旧版本。
+恢复旧数据库可能复活会话，旧镜像也可能没有鉴权；重新开放公网前必须运行支持鉴权的版本，并通过 SSH 重置管理员密码以撤销全部旧会话。验收恢复后的服务，更新 `deploy/current.json` 为实际运行版本，再由管理员移走恢复标记以允许下次自动部署。不要仅删除标记就自动重试，也不要在未处理数据库兼容性时直接启动旧版本。
 
 ## 本地验证
 
 ```bash
 cargo fmt --check
 cargo test --locked
-python3 -m unittest discover -s tests -p test_deploy.py -v
-node --test tests/health_dashboard_browser.cjs tests/admin_management_browser.cjs
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+node --test tests/health_dashboard_browser.cjs tests/admin_management_browser.cjs tests/admin_auth_browser.cjs
 bash -n deploy/install.sh
 sh -n deploy/ssh-entry
 docker build --platform linux/amd64 -t issue-watch:check .

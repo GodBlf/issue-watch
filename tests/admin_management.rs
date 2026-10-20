@@ -1,8 +1,5 @@
-use issue_watch::{
-    admin::{serve, Admin},
-    health::Health,
-    Store,
-};
+mod support;
+use issue_watch::{admin::Admin, health::Health, Store};
 use serde_json::{json, Value};
 
 struct Fixture {
@@ -103,11 +100,12 @@ impl Fixture {
         let management = admin.config.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let task = tokio::spawn(serve(listener, health, admin));
+        let (client, task) =
+            support::authenticated_server(listener, health, admin, &database).await;
         Self {
             _dir: dir,
             base,
-            client: reqwest::Client::new(),
+            client,
             database,
             management,
             task,
@@ -327,8 +325,8 @@ async fn startup_edits_do_not_redirect_management_to_another_database_or_fake_ap
     let admin = Admin::with_active(&config_path, &original, health.clone()).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let task = tokio::spawn(serve(listener, health, admin));
-    let client = reqwest::Client::new();
+    let (client, task) =
+        support::authenticated_server(listener, health, admin, &original_database).await;
     let snapshot: Value = client
         .get(format!("{base}/api/admin/config"))
         .send()

@@ -16,6 +16,7 @@ use std::{
 
 #[derive(Clone)]
 pub struct Admin {
+    auth: crate::admin_auth::Auth,
     store: Arc<Mutex<Store>>,
     pub config: crate::config_management::ConfigManagement,
     tracking_source: Arc<dyn crate::tracking::TrackingSource>,
@@ -32,7 +33,16 @@ impl Admin {
     ) -> anyhow::Result<Self> {
         let store = Store::open(&active.database_path)?.with_health(health)?;
         store.reconcile_repositories_with_clock(&active.repositories, chrono::Utc::now)?;
+        let mut auth = crate::admin_auth::Auth::open(
+            &active.database_path,
+            &std::env::var("ISSUE_WATCH_ADMIN_ORIGIN")
+                .unwrap_or_else(|_| "https://127.0.0.1".into()),
+        )?;
+        if let Ok(proxy) = std::env::var("ISSUE_WATCH_ADMIN_TRUSTED_PROXY") {
+            auth = auth.with_trusted_proxy(proxy.parse()?);
+        }
         Ok(Self {
+            auth,
             store: Arc::new(Mutex::new(store)),
             config: crate::config_management::ConfigManagement::new(config_path, active.clone())?,
             tracking_source: Arc::new(crate::tracking::GithubTrackingSource::new(
@@ -45,6 +55,10 @@ impl Admin {
         source: Arc<dyn crate::tracking::TrackingSource>,
     ) -> Self {
         self.tracking_source = source;
+        self
+    }
+    pub fn with_auth(mut self, auth: crate::admin_auth::Auth) -> Self {
+        self.auth = auth;
         self
     }
 }
@@ -66,37 +80,13 @@ impl From<anyhow::Error> for ApiError {
 }
 type ApiResult<T> = Result<T, ApiError>;
 
-fn verify_write(headers: &HeaderMap) -> ApiResult<()> {
-    let valid = (|| {
-        if headers.get("x-issue-watch-admin")?.to_str().ok()? != "1" {
-            return None;
-        }
-        if headers
-            .get("sec-fetch-site")
-            .is_some_and(|v| v != "same-origin")
-        {
-            return None;
-        }
-        let origin = url::Url::parse(headers.get("origin")?.to_str().ok()?).ok()?;
-        let host = headers.get("host")?.to_str().ok()?;
-        let expected = url::Url::parse(&format!("http://{host}")).ok()?;
-        let loopback = match expected.host()? {
-            url::Host::Domain(name) => name.eq_ignore_ascii_case("localhost"),
-            url::Host::Ipv4(ip) => ip.is_loopback(),
-            url::Host::Ipv6(ip) => ip.is_loopback(),
-        };
-        if !loopback || origin.origin() != expected.origin() {
-            return None;
-        }
-        Some(())
-    })()
-    .is_some();
-    if valid {
+fn verify_write(admin: &Admin, headers: &HeaderMap) -> ApiResult<()> {
+    if admin.auth.verify_write(headers) {
         Ok(())
     } else {
         Err(ApiError(
             StatusCode::FORBIDDEN,
-            "只允许来自本机管理页面的请求".into(),
+            "请求来源不受信任，请从管理页面操作".into(),
         ))
     }
 }
@@ -118,7 +108,7 @@ async fn add_subscription(
     headers: HeaderMap,
     Json(body): Json<AddSubscription>,
 ) -> ApiResult<impl IntoResponse> {
-    verify_write(&headers)?;
+    verify_write(&admin, &headers)?;
     let openid = body.user_openid.trim();
     if openid.is_empty() || openid.len() > 256 || openid.chars().any(char::is_whitespace) {
         return Err(ApiError(
@@ -159,7 +149,7 @@ async fn update_note(
     headers: HeaderMap,
     Json(body): Json<Note>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    verify_write(&headers)?;
+    verify_write(&admin, &headers)?;
     if body
         .qq_number_note
         .as_ref()
@@ -196,7 +186,7 @@ async fn select_repositories(
     headers: HeaderMap,
     Json(body): Json<RepositorySelection>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    verify_write(&headers)?;
+    verify_write(&admin, &headers)?;
     let store = admin.store.lock().unwrap();
     store
         .replace_subscription_repositories(id, &body.repositories)
@@ -219,7 +209,7 @@ async fn remove_subscription(
     axum::extract::Path(id): axum::extract::Path<i64>,
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
-    verify_write(&headers)?;
+    verify_write(&admin, &headers)?;
     if !admin.store.lock().unwrap().remove_subscription_by_id(id)? {
         return Err(ApiError(
             StatusCode::NOT_FOUND,
@@ -239,7 +229,7 @@ async fn save_configuration(
     headers: HeaderMap,
     Json(body): Json<crate::config_management::ConfigEdit>,
 ) -> ApiResult<Json<crate::config_management::ConfigSnapshot>> {
-    verify_write(&headers)?;
+    verify_write(&admin, &headers)?;
     use crate::config_management::SaveError;
     match admin.config.save(body) {
         Ok(snapshot) => Ok(Json(snapshot)),
@@ -267,7 +257,7 @@ async fn tracking_add(
     headers: HeaderMap,
     Json(body): Json<TrackingInput>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
-    verify_write(&headers)?;
+    verify_write(&admin, &headers)?;
     let (repository, number) = crate::tracking::issue_url(&body.url)
         .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
     if !admin
@@ -310,7 +300,7 @@ async fn tracking_remove(
     axum::extract::Path(id): axum::extract::Path<i64>,
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
-    verify_write(&headers)?;
+    verify_write(&admin, &headers)?;
     let removed = admin.store.lock().unwrap().cancel_tracking(id)?;
     Ok(Json(
         json!({"removed":removed,"message":if removed {"已取消共享追踪"} else {"该 Issue 未在追踪中"}}),
@@ -330,7 +320,7 @@ async fn permissions_save(
     headers: HeaderMap,
     Json(body): Json<crate::tracking::TrackingPermissions>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    verify_write(&headers)?;
+    verify_write(&admin, &headers)?;
     admin
         .store
         .lock()
@@ -339,8 +329,20 @@ async fn permissions_save(
         .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(json!({"saved":true})))
 }
-pub fn router(admin: Admin) -> Router {
+fn router(admin: Admin) -> Router {
     Router::new()
+        .route(
+            "/admin-session.js",
+            get(|| async {
+                (
+                    [(
+                        axum::http::header::CONTENT_TYPE,
+                        "text/javascript; charset=utf-8",
+                    )],
+                    include_str!("admin-session.js"),
+                )
+            }),
+        )
         .route(
             "/admin-tracking.js",
             get(|| async {
@@ -420,5 +422,23 @@ pub async fn serve(
     health: Health,
     admin: Admin,
 ) -> std::io::Result<()> {
-    axum::serve(listener, crate::health::router(health).merge(router(admin))).await
+    let auth = admin.auth.clone();
+    let internal_health = health.clone();
+    // This listener is published only on the host loopback. The public proxy must
+    // reject /internal/ before forwarding; no Host or forwarded header enables it.
+    let router =
+        crate::admin_auth::protect(crate::health::router(health).merge(router(admin)), auth).route(
+            "/internal/status",
+            get(move || async move {
+                (
+                    [(axum::http::header::CACHE_CONTROL, "no-store")],
+                    Json(internal_health.snapshot()),
+                )
+            }),
+        );
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
 }

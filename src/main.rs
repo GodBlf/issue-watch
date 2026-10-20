@@ -11,6 +11,41 @@ async fn main() -> Result<()> {
     eprintln!("Loading local configuration");
     dotenvy::from_filename(".env.local").ok();
     dotenvy::dotenv().ok();
+    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    if !arguments.is_empty() {
+        anyhow::ensure!(
+            arguments.len() == 1
+                && matches!(
+                    arguments[0].as_str(),
+                    "--admin-password" | "--admin-password-stdin"
+                ),
+            "usage: issue-watch [--admin-password | --admin-password-stdin]"
+        );
+        let config_path =
+            std::env::var("ISSUE_WATCH_CONFIG").unwrap_or_else(|_| "config.toml".into());
+        let config = issue_watch::config::FileConfig::load(config_path)?;
+        if let Some(parent) = std::path::Path::new(&config.database_path).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let password = if arguments[0] == "--admin-password" {
+            let password = rpassword::prompt_password("New admin password (at least 16 bytes): ")?;
+            let confirmation = rpassword::prompt_password("Confirm password: ")?;
+            anyhow::ensure!(password == confirmation, "passwords do not match");
+            password
+        } else {
+            use std::io::Read;
+            let mut password = String::new();
+            std::io::stdin().take(1027).read_to_string(&mut password)?;
+            let password = password.strip_suffix('\n').unwrap_or(&password);
+            password.strip_suffix('\r').unwrap_or(password).to_owned()
+        };
+        let origin = std::env::var("ISSUE_WATCH_ADMIN_ORIGIN")
+            .unwrap_or_else(|_| "https://127.0.0.1".into());
+        issue_watch::admin_auth::Auth::open(&config.database_path, &origin)?
+            .reset_password(&password)?;
+        eprintln!("Admin password updated; all browser sessions revoked.");
+        return Ok(());
+    }
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .with_ansi(false)

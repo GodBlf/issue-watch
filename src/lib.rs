@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod admin_auth;
 pub mod config;
 pub mod config_management;
 pub mod github;

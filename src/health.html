@@ -15,7 +15,8 @@ form{display:flex;flex-wrap:wrap;gap:12px;align-items:end}label{display:flex;fle
 </style></head>
 <body>
 <nav class="sidebar" aria-label="后台导航"><strong>Issue Watch</strong><a href="#overview" data-target="overview">概览</a><a href="#repositories" data-target="repositories">仓库</a><a href="#subscriptions" data-target="subscriptions">通知目标</a><a href="#permissions" data-target="permissions">用户权限</a><a href="#settings" data-target="settings">设置</a></nav><main>
-<header><h1>Issue Watch 管理后台</h1><p>本次运行的状态 · 每 10 秒自动刷新 · 本机管理员入口</p></header>
+<header><h1>Issue Watch 管理后台</h1><p>本次运行的状态 · 每 10 秒自动刷新</p><button id="logout" type="button">退出登录</button></header>
+<p id="session-expired" role="alert" hidden><span id="session-message"></span> <a href="/login">重新登录</a></p>
 <p id="connection" role="alert" hidden></p>
 <div data-view="overview">
 <section aria-live="polite"><h2>健康状态</h2><small>整体状态</small><div id="status" class="status-unknown">未知</div>
@@ -38,6 +39,7 @@ form{display:flex;flex-wrap:wrap;gap:12px;align-items:end}label{display:flex;fle
 <div class="toolbar"><label>搜索 <input id="repository-search" type="search" placeholder="搜索列表" autocomplete="off"></label></div><div class="pager"><button id="repository-previous" type="button">上一页</button><span id="repository-page"></span><button id="repository-next" type="button">下一页</button></div><div id="repositories">正在加载仓库…</div>
 </section>
 <section><button id="repository-back" type="button" hidden>返回仓库列表</button><h2 id="tracking-repository">Issue 追踪</h2><p>共享追踪动态仅发送给订阅对应仓库的通知目标。Issue 关闭后自动清理。读取动态及关联 PR 需要配置 GitHub Token。</p><details><summary>添加 Issue 追踪</summary><form id="add-tracking"><label>完整 Issue URL <input name="url" type="url" required maxlength="2048" placeholder="https://github.com/owner/repo/issues/123"></label><button>添加追踪</button></form></details><p id="tracking-message" role="status" aria-live="polite"></p><div class="toolbar"><label>搜索 <input id="tracking-search" type="search" placeholder="搜索列表" autocomplete="off"></label></div><div class="pager"><button id="tracking-previous" type="button">上一页</button><span id="tracking-page"></span><button id="tracking-next" type="button">下一页</button></div><div id="tracking-list">正在读取追踪…</div></section></div><div data-view="permissions" hidden><section><h2>用户权限</h2><p>所有 QQ 用户默认无权限。添加与取消分别授权；取消权限可停止任何共享追踪。删除通知目标或撤销权限不删除追踪。</p><details><summary>录入用户权限</summary><form id="add-permission"><label>user_openid <input name="user_openid" required maxlength="256" autocomplete="off"></label><label>添加追踪 <input name="can_add" type="checkbox"></label><label>取消任意共享追踪 <input name="can_cancel" type="checkbox"></label><button>保存权限</button></form></details><p id="permission-message" role="status" aria-live="polite"></p><div class="toolbar"><label>搜索 <input id="permissions-search" type="search" placeholder="搜索列表" autocomplete="off"></label></div><div class="pager"><button id="permissions-previous" type="button">上一页</button><span id="permissions-page"></span><button id="permissions-next" type="button">下一页</button></div><div id="permissions-list">正在读取权限…</div></section></div></main><small>连接失败仅表示网页暂时无法取得状态，不能确定程序、服务器或 SSH 隧道的具体情况。服务器不可达时，新打开页面可能直接显示浏览器连接错误。时间使用 UTC。</small>
+<script src="/admin-session.js"></script>
 <script>
 const labels = {normal:'正常',warning:'警告',error:'异常',unknown:'未知'};
 const names = {issue_tracking:'Issue 追踪',github:'GitHub 检查',qq_gateway:'QQ 连接',qq_binding:'通知目标绑定',qq_auth:'QQ 鉴权',qq_delivery:'实际通知发送',notification_queue:'通知队列',progress:'业务推进',overall:'整体健康'};

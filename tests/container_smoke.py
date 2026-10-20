@@ -24,7 +24,7 @@ def main():
         # Model a private configuration owned by the host administrator, while the image runs as root.
         os.chmod(config, 0o600)
         os.chown(config, 1000, 1000)
-        (root / ".env.local").write_text("QQ_APP_ID=test\nQQ_APP_SECRET=smoke-secret\nQQ_ACCESS_TOKEN=smoke-token\nQQ_GATEWAY_URL=ws://127.0.0.1:9\n")
+        (root / ".env.local").write_text("QQ_APP_ID=test\nQQ_APP_SECRET=smoke-secret\nQQ_ACCESS_TOKEN=smoke-token\nQQ_GATEWAY_URL=ws://127.0.0.1:9\nISSUE_WATCH_ADMIN_ORIGIN=http://127.0.0.1:8080\n")
         override = root / "network.yml"
         override.write_text("networks:\n  default:\n    internal: true\n")
         env = dict(os.environ, ISSUE_WATCH_ROOT=str(root), ISSUE_WATCH_IMAGE=args.image)
@@ -34,17 +34,22 @@ def main():
             return subprocess.run(command + list(arguments), env=env, capture_output=True, text=True, check=True, timeout=60).stdout
 
         def snapshot():
-            return api("/api/status")[1]
+            return api("/internal/status")[1]
+
+        session_cookie = ""
 
         def api(path, method="GET", body=None, origin="http://127.0.0.1:8080"):
+            nonlocal session_cookie
             identifier = run("ps", "-q", "issue-watch").strip()
             payload = json.dumps(body).encode() if body is not None else b""
-            request = f"{method} {path} HTTP/1.0\r\nHost: 127.0.0.1:8080\r\nConnection: close\r\nOrigin: {origin}\r\nX-Issue-Watch-Admin: 1\r\nContent-Type: application/json\r\nContent-Length: {len(payload)}\r\n\r\n" + payload.decode()
+            request = f"{method} {path} HTTP/1.0\r\nHost: 127.0.0.1:8080\r\nConnection: close\r\nOrigin: {origin}\r\nX-Issue-Watch-Admin: 1\r\nCookie: {session_cookie}\r\nContent-Type: application/json\r\nContent-Length: {len(payload)}\r\n\r\n" + payload.decode()
             # Docker's internal network also isolates host access on some platforms.
             response = subprocess.run([
                 "docker", "exec", identifier, "bash", "-c",
                 'exec 3<>/dev/tcp/127.0.0.1/8080; printf "%s" "$1" >&3; cat <&3', "request", request,
             ], capture_output=True, text=True, check=True, timeout=5).stdout
+            if path == "/api/auth/login":
+                session_cookie = next(line.split(":", 1)[1].strip().split(";", 1)[0] for line in response.splitlines() if line.lower().startswith("set-cookie:"))
             return int(response.split()[1]), json.loads(response.split("\n\n", 1)[1])
 
         def wait_for(predicate, read=snapshot):
@@ -67,6 +72,9 @@ def main():
             assert not next(v for v in service["volumes"] if v["target"] == "/app/config").get("read_only", False)
             run("up", "-d", "--no-build", "--pull", "never")
             wait_for(lambda status: "qq_binding" in status["components"])
+            identifier = run("ps", "-q", "issue-watch").strip()
+            subprocess.run(["docker", "exec", "-i", identifier, "issue-watch", "--admin-password-stdin"], input="smoke-admin-long-password\n", text=True, capture_output=True, check=True, timeout=20)
+            assert api("/api/auth/login", "POST", {"password": "smoke-admin-long-password"})[0] == 200
             database = root / "data/issue-watch.sqlite3"
             assert database.exists()
             replacement = config.with_suffix(".tmp")

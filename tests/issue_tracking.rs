@@ -1,7 +1,8 @@
+mod support;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use issue_watch::{
-    admin::{serve, Admin},
+    admin::Admin,
     health::Health,
     tracking::{Activity, IssueSnapshot, TrackingSource},
     Store,
@@ -62,12 +63,12 @@ impl Fixture {
             .with_tracking_source(source.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let task = tokio::spawn(serve(listener, health, admin));
+        let (client, task) = support::authenticated_server(listener, health, admin, &path).await;
         Self {
             _dir: dir,
             path,
             base,
-            client: reqwest::Client::new(),
+            client,
             source,
             task,
         }

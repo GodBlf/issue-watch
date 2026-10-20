@@ -109,7 +109,7 @@ class Deployment:
             container = self.container()
             if not container or container["image"] != self.image or not container["running"]:
                 raise RuntimeError("target container is not running")
-            response = command("curl", "--fail", "--silent", "--max-time", "5", "http://127.0.0.1:8081/api/status", check=False)
+            response = command("curl", "--fail", "--silent", "--max-time", "5", "http://127.0.0.1:8081/internal/status", check=False)
             try:
                 status = json.loads(response.stdout)
                 if response.returncode == 0 and status["status"] in ("normal", "unknown", "warning", "error") and isinstance(status["uptime_seconds"], int):

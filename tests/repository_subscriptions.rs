@@ -1,10 +1,11 @@
+mod support;
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use issue_watch::tracking::{
     check_tracked, deliver_tracking, Activity, IssueSnapshot, TrackingSource,
 };
 use issue_watch::{
-    admin::{serve, Admin},
+    admin::Admin,
     health::Health,
     qq::{MessageSink, SendError},
     queue::deliver_pending,
@@ -46,12 +47,12 @@ impl Fixture {
             .with_tracking_source(source.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let task = tokio::spawn(serve(listener, health, admin));
+        let (client, task) = support::authenticated_server(listener, health, admin, &path).await;
         Self {
             _dir: dir,
             path,
             base,
-            client: reqwest::Client::new(),
+            client,
             source,
             task,
         }
@@ -496,6 +497,7 @@ async fn deleting_target_removes_selection_and_health_distinguishes_empty_target
 }
 
 struct InterruptedSend {
+    client: reqwest::Client,
     base: String,
     id: i64,
     started: tokio::sync::Notify,
@@ -503,7 +505,7 @@ struct InterruptedSend {
 #[async_trait]
 impl MessageSink for InterruptedSend {
     async fn send(&self, _: &str, _: &str) -> Result<(), SendError> {
-        let client = reqwest::Client::new();
+        let client = &self.client;
         for repos in [vec![], vec!["o/a"]] {
             client
                 .put(format!(
@@ -548,6 +550,7 @@ async fn restart_after_cancelled_inflight_crash_does_not_resume_either_notificat
             store.insert_notification(&issue("o/a", 1)).unwrap();
         }
         let interrupted = InterruptedSend {
+            client: f.client.clone(),
             base: f.base.clone(),
             id: alice,
             started: tokio::sync::Notify::new(),

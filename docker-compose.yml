@@ -7,6 +7,7 @@ services:
     environment:
       ISSUE_WATCH_HEALTH_BIND: 0.0.0.0:8080
       ISSUE_WATCH_CONFIG: /app/config/config.toml
+      ISSUE_WATCH_ADMIN_ORIGIN: ${ISSUE_WATCH_ADMIN_ORIGIN:-https://127.0.0.1}
       QQ_APP_ID: ${QQ_APP_ID}
       QQ_APP_SECRET: ${QQ_APP_SECRET}
       QQ_ACCESS_TOKEN: ${QQ_ACCESS_TOKEN}
