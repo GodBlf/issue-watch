@@ -14,7 +14,7 @@ form{display:flex;flex-wrap:wrap;gap:12px;align-items:end}label{display:flex;fle
 @media(max-width:760px){body{padding:0 14px 20px}.sidebar{position:sticky;top:0;z-index:5;box-sizing:border-box;width:100%;height:auto;display:flex;flex-direction:row;flex-wrap:wrap;padding:10px;gap:4px}.sidebar strong{display:none}.sidebar a{padding:6px;font-size:14px}section{padding:16px}dl{grid-template-columns:110px 1fr}}
 </style></head>
 <body>
-<nav class="sidebar" aria-label="后台导航"><strong>Issue Watch</strong><a href="#overview" data-target="overview">概览</a><a href="#repositories" data-target="repositories">仓库</a><a href="#subscriptions" data-target="subscriptions">通知目标</a><a href="#permissions" data-target="permissions">用户权限</a><a href="#settings" data-target="settings">设置</a></nav><main>
+<nav class="sidebar" aria-label="后台导航"><strong>Issue Watch</strong><a href="#overview" data-target="overview">概览</a><a href="#repositories" data-target="repositories">仓库</a><a href="#subscriptions" data-target="subscriptions">通知目标</a><a href="#bilibili" data-target="bilibili">直播间</a><a href="#permissions" data-target="permissions">用户权限</a><a href="#settings" data-target="settings">设置</a></nav><main>
 <header><h1>Issue Watch 管理后台</h1><p>本次运行的状态 · 每 10 秒自动刷新</p><button id="logout" type="button">退出登录</button></header>
 <p id="session-expired" role="alert" hidden><span id="session-message"></span> <a href="/login">重新登录</a></p>
 <p id="connection" role="alert" hidden></p>
@@ -24,11 +24,11 @@ form{display:flex;flex-wrap:wrap;gap:12px;align-items:end}label{display:flex;fle
 <p id="reasons"></p>
 <section><h2>业务观察</h2><div id="components">尚无检查结果，等待业务观察。</div></section>
 </div><div data-view="subscriptions" hidden><section id="subscription-management"><h2>通知目标</h2>
-<p>为每个通知目标分别选择仓库，空订阅不接收通知；新用户需管理员配置仓库。发送使用当前机器人的 user_openid，QQ 号仅作备注。保存订阅不代表已验证发送权限。</p>
+<p>为每个通知目标分别选择仓库，没有仓库订阅时不接收 Issue 通知；直播订阅单独配置，也可通过 QQ 命令自行添加。新用户需管理员配置仓库。发送使用当前机器人的 user_openid，QQ 号仅作备注。保存订阅不代表已验证发送权限。</p>
 <details><summary>添加通知目标</summary><form id="add-subscription"><label>user_openid <input name="user_openid" required maxlength="256" autocomplete="off"></label>
 <label>QQ 号备注（选填） <input name="qq_number_note" maxlength="256" autocomplete="off"></label><button>添加接收者</button></form></details>
 <p id="subscription-message" role="status" aria-live="polite"></p><div class="toolbar"><label>搜索 <input id="subscription-search" type="search" placeholder="搜索列表" autocomplete="off"></label></div><div class="pager"><button id="subscription-previous" type="button">上一页</button><span id="subscription-page"></span><button id="subscription-next" type="button">下一页</button></div><div id="subscriptions">正在加载接收者…</div></section>
-</div><div data-view="settings" hidden><section id="configuration-management"><h2>监控配置</h2>
+</div><div data-view="bilibili" hidden><section><h2>Bilibili 共享直播间</h2><p>在通知目标中编辑直播订阅，也可私聊使用 /bilibili 房间号。最后一人退订后停止检查。接口失败时保留上次成功状态。</p><p id="live-message" role="status" aria-live="polite"></p><div id="live-rooms" style="white-space:pre-wrap">正在读取直播间…</div></section><section><h2>最近 100 条永久投递失败</h2><div id="live-failures">正在读取…</div></section></div><div data-view="settings" hidden><section id="configuration-management"><h2>监控配置</h2>
 <p id="configuration-stage" role="status" aria-live="polite">正在读取配置…</p>
 <form id="poll-interval"><label>轮询间隔（秒，1–86400） <input name="seconds" type="number" min="1" max="86400" step="1" required disabled></label><button disabled>保存间隔</button></form>
 <form id="tracking-interval"><label>Issue 追踪检查间隔（秒，1–86400） <input name="seconds" type="number" min="1" max="86400" step="1" required disabled></label><button disabled>保存追踪间隔</button></form>

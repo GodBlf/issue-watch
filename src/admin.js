@@ -18,6 +18,35 @@
   let repositoryRenderKey = null;
   const noteDrafts = new Map();
   const repositoryDrafts = new Map();
+  const liveDrafts = new Map();
+  function livePicker(row) {
+    const block=document.createElement('div'); block.className='live-subscriptions';
+    const heading=document.createElement('p'); heading.textContent='直播订阅'; block.append(heading);
+    const rooms=row.live_subscriptions||[];
+    if(!rooms.length){const empty=document.createElement('p');empty.textContent='未订阅任何直播间';block.append(empty);}
+    for(const room of rooms){
+      const item=document.createElement('p'); item.textContent=`${room.anchor} · 房间 ${room.room_id}`;
+      const remove=document.createElement('button');remove.type='button';remove.textContent='取消直播订阅';
+      remove.addEventListener('click',()=>operation(block,'subscription-message',async()=>{
+        await request(`/api/admin/subscriptions/${row.id}/bilibili/${room.room_id}`,'DELETE');
+        byId('subscription-message').textContent='已取消直播订阅，待发送通知已取消；已发出的请求可能仍送达。';
+      })); item.append(remove);block.append(item);
+    }
+    const form=document.createElement('form');
+    const label=document.createElement('label');label.textContent='直播房间号或链接';
+    const input=document.createElement('input');input.required=true;input.maxLength=2048;input.value=liveDrafts.get(row.id)||'';
+    input.addEventListener('input',()=>{liveDrafts.set(row.id,input.value);markDirty(form,Boolean(input.value));});
+    const add=document.createElement('button');add.textContent='添加直播订阅';
+    label.append(input);form.append(label,add);markDirty(form,Boolean(input.value));block.append(form);
+    form.addEventListener('submit',event=>{
+      event.preventDefault();operation(block,'subscription-message',async()=>{
+        const data=await request(`/api/admin/subscriptions/${row.id}/bilibili`,'POST',{room:input.value.trim()});
+        liveDrafts.delete(row.id);input.value='';markDirty(form,false);
+        byId('subscription-message').textContent=data.message||'直播订阅已生效。';
+      });
+    });
+    return block;
+  }
   function repositoryPicker(row, choices) {
     const form = document.createElement('form');
     const selected = new Set(repositoryDrafts.get(row.id) || row.repositories || []);
@@ -96,12 +125,12 @@
           if (!confirm(`移除 ${row.user_openid}？未发送通知将取消，备注将删除；正在发出的请求可能仍送达。对方可重新 /bind，旧积压不会恢复。`)) return;
           operation(form, 'subscription-message', async () => {
             await request(`/api/admin/subscriptions/${row.id}`, 'DELETE');
-            noteDrafts.delete(row.id); repositoryDrafts.delete(row.id); markDirty(form,false);
-            byId('subscription-message').textContent = '已移除通知目标及全部仓库订阅。'; await refreshSubscriptions();
+            noteDrafts.delete(row.id); repositoryDrafts.delete(row.id); liveDrafts.delete(row.id); markDirty(form,false);
+            byId('subscription-message').textContent = '已移除通知目标及全部仓库和直播订阅。'; await refreshSubscriptions();
           });
         });
         const subscribed = document.createElement('p'); subscribed.textContent = row.repositories?.length ? `订阅 ${row.repositories.length} 个仓库：${row.repositories.join('、')}` : '未订阅任何仓库';
-        block.append(identity, form, subscribed, repositoryPicker(row,choices)); container.append(block);
+        block.append(identity, form, subscribed, repositoryPicker(row,choices),livePicker(row)); container.append(block);
       }
     } catch (error) { byId('subscription-message').textContent = '接收者刷新失败：'+error.message; }
     finally { subscriptionLoading = false; }
@@ -217,8 +246,31 @@
     byId(kind+'-search').addEventListener('input',()=>{pages[kind]=1;render();});
     for(const [suffix,step]of [['previous',-1],['next',1]])byId(kind+'-'+suffix).addEventListener('click',()=>{pages[kind]+=step;render();});
   }
+  let liveLoading=false;
+  async function refreshLive() {
+    if(liveLoading)return;liveLoading=true;
+    try {
+      const data=await request('/api/admin/bilibili');
+      if(!Array.isArray(data.rooms)||!Array.isArray(data.failures))throw new Error('直播状态响应无效');
+      const rooms=byId('live-rooms');rooms.replaceChildren();
+      if(!data.rooms.length)rooms.textContent='暂无被订阅的直播间。';
+      const time=value=>value==null?'尚无记录':new Date(value*1000).toISOString();
+      const status={0:'未开播',1:'直播中',2:'轮播'};
+      for(const row of data.rooms){
+        const block=document.createElement('p');
+        block.textContent=`${row.anchor} · 房间 ${row.room_id} · ${row.subscriber_count} 人订阅\n${row.error?'上次成功状态':'最近确认状态'}：${status[row.live_status]||'未知'}\n最近检查：${time(row.checked_at)} · 最近成功：${time(row.last_success_at)}${row.error?'\n检查异常：'+row.error:''}`;
+        rooms.append(block);
+      }
+      const failures=byId('live-failures');failures.replaceChildren();
+      if(!data.failures.length)failures.textContent='暂无永久投递失败。';
+      for(const row of data.failures){const block=document.createElement('p');block.textContent=`通知目标 #${row.target_id} · 房间 ${row.room_id}：${row.error||'永久投递失败'}`;failures.append(block);}
+      byId('live-message').textContent='直播状态已刷新；每两分钟检查一次。';
+    }catch(error){byId('live-message').textContent='直播状态刷新失败，下方可能是上次取得的数据：'+error.message;}
+    finally{liveLoading=false;}
+  }
   refreshConfiguration();
   setInterval(refreshConfiguration, 2000);
-  setInterval(() => { if (!byId('subscriptions').contains(document.activeElement)) refreshSubscriptions(); }, 10000);
+  setInterval(() => { if (!byId('subscriptions').contains(document.activeElement)) refreshSubscriptions(); refreshLive(); }, 10000);
   refreshSubscriptions();
+  refreshLive();
 })();

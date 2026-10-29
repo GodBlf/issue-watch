@@ -270,3 +270,63 @@ async fn command_reply_keeps_message_reference_after_token_refresh() {
     assert!(broadcast.1.get("msg_id").is_none());
     server.abort();
 }
+
+#[tokio::test(start_paused = true)]
+async fn proactive_send_permit_covers_slow_validation_and_serializes_real_http_starts() {
+    use issue_watch::qq::MessageSink;
+    let (tx, mut requests) = mpsc::unbounded_channel();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/{user}/messages",
+                post(move || {
+                    let tx = tx.clone();
+                    async move {
+                        tx.send(tokio::time::Instant::now()).unwrap();
+                        StatusCode::OK
+                    }
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+    });
+    let sender = Arc::new(RefreshingQqHttpSender::with_endpoint(
+        "token".into(),
+        "app".into(),
+        "secret".into(),
+        endpoint,
+    ));
+    let first = sender.reserve_delivery().await;
+    let (acquired, mut acquired_rx) = mpsc::unbounded_channel();
+    let other = tokio::spawn({
+        let sender = sender.clone();
+        async move {
+            let mut permit = sender.reserve_delivery().await;
+            acquired.send(()).unwrap();
+            permit.started();
+            sender.send("bob", "second").await.unwrap();
+        }
+    });
+    tokio::time::advance(Duration::from_secs(10)).await;
+    tokio::task::yield_now().await;
+    assert!(
+        acquired_rx.try_recv().is_err(),
+        "another delivery must wait through final validation"
+    );
+    // Real socket readiness must run against wall time; the long validation delay
+    // above remains virtual, while only the three-second HTTP pacing is real.
+    tokio::time::resume();
+    let mut first = first;
+    first.started();
+    sender.send("alice", "first").await.unwrap();
+    drop(first);
+    other.await.unwrap();
+    let first = requests.recv().await.unwrap();
+    let second = requests.recv().await.unwrap();
+    assert!(second.duration_since(first) >= Duration::from_secs(3));
+    server.abort();
+}

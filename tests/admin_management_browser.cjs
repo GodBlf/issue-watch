@@ -21,12 +21,13 @@ function setup() {
     const form=byId(id); for(const name of names) { form.elements[name]=new Element('input'); form.append(form.elements[name]); } form.append(new Element('button'));
   }
   const requests=[], intervals=[], confirmations=[]; let rows=[], config={version:'v1',stage:'applied',error:null,saved:{repositories:['owner/repo'],poll_interval_seconds:60},applied:{repositories:['owner/repo'],poll_interval_seconds:60}};
+  let liveDiagnostics={rooms:[],failures:[]}, liveError=false;
   let allowConfirm=true, pendingGate=null, selectionError=false;
   const sandbox={document:{getElementById:byId,createElement:tag=>new Element(tag),activeElement:null},AbortSignal:{timeout:()=>({})},confirm:text=>{confirmations.push(text);return allowConfirm;},setInterval:(fn,ms)=>intervals.push({fn,ms}),fetch:async(path,options)=>{
     requests.push({path,...options}); let data;
     if(selectionError && options.method==='PUT')return {ok:false,json:async()=>({error:'仓库已移除，请刷新'})};
     if(options.method!=='GET' && pendingGate) await pendingGate;
-    if(path==='/api/admin/repositories') { data=config.accepted?.repositories || config.applied.repositories; } else if(path.endsWith('/repositories') && options.method==='PUT') { rows.find(row=>path.includes('/'+row.id+'/')).repositories=JSON.parse(options.body).repositories; data={saved:true}; } else if(path.endsWith('/tracking')) { data=[]; } else if(path.endsWith('/config')) {
+    if(path==='/api/admin/bilibili'){if(liveError)return {ok:false,json:async()=>({error:'offline'})};data=liveDiagnostics;} else if(path.endsWith('/bilibili') && options.method==='POST'){rows[0].live_subscriptions=[{room_id:7734200,anchor:'测试主播'}];data={message:'直播订阅已生效'};} else if(path.includes('/bilibili/') && options.method==='DELETE'){rows[0].live_subscriptions=[];data={removed:true};} else if(path==='/api/admin/repositories') { data=config.accepted?.repositories || config.applied.repositories; } else if(path.endsWith('/repositories') && options.method==='PUT') { rows.find(row=>path.includes('/'+row.id+'/')).repositories=JSON.parse(options.body).repositories; data={saved:true}; } else if(path.endsWith('/tracking')) { data=[]; } else if(path.endsWith('/config')) {
       if(options.method==='PATCH') { const body=JSON.parse(options.body); if(body.version!==config.version) return {ok:false,json:async()=>({error:'配置已变化，请刷新'})}; config={...config,version:'v2',stage:'saved',saved:{...config.saved,...body}}; }
       data=config;
     } else if(options.method==='POST') { const body=JSON.parse(options.body); rows.push({id:1,repositories:[],...body}); data={added:true}; }
@@ -35,7 +36,7 @@ function setup() {
     return {ok:true,json:async()=>JSON.parse(JSON.stringify(data))};
   }};
   vm.runInNewContext(fs.readFileSync('src/admin.js','utf8'),sandbox);
-  return {byId,requests,intervals,confirmations,failSelection:value=>{selectionError=value;},setConfig:value=>{config=value;},setConfirm:value=>{allowConfirm=value;},holdWrites:()=>{let resolve;pendingGate=new Promise(done=>resolve=done);return ()=>{pendingGate=null;resolve();};}};
+  return {byId,requests,intervals,confirmations,setLiveDiagnostics:data=>liveDiagnostics=data,failLiveDiagnostics:value=>liveError=value,setLiveRooms:roomsValue=>{rows[0].live_subscriptions=roomsValue;},failSelection:value=>{selectionError=value;},setConfig:value=>{config=value;},setConfirm:value=>{allowConfirm=value;},holdWrites:()=>{let resolve;pendingGate=new Promise(done=>resolve=done);return ()=>{pendingGate=null;resolve();};}};
 }
 
 test('administrator adds, edits and confirms removal of a receiver without interpreting user text as HTML',async()=>{
@@ -148,4 +149,44 @@ test('repository save failure retains draft and select-all covers hidden active 
   form=picker();assert.equal(form.querySelectorAll('input').filter(i=>i.type==='checkbox'&&i.checked).length,2);
   ui.failSelection(false);await form.fire();
   assert.deepEqual(JSON.parse(ui.requests.filter(r=>r.method==='PUT').at(-1).body).repositories,['o/a','o/b']);
+});
+
+test('live subscription editor preserves drafts and posts room input through the shared target',async()=>{
+  const ui=setup(); await settle();
+  const form=ui.byId('add-subscription'); form.elements.user_openid.value='live-user'; await form.fire();
+  let block=ui.byId('subscriptions').children[0];
+  let editor=block.children.find(child=>child.className==='live-subscriptions');
+  assert.ok(editor,'target has a live subscription editor');
+  const input=editor.querySelector('input'); input.value='https://live.bilibili.com/6'; await input.fire('input');
+  await ui.intervals.find(item=>item.ms===10000).fn(); await settle();
+  block=ui.byId('subscriptions').children[0];editor=block.children.find(child=>child.className==='live-subscriptions');
+  assert.equal(editor.querySelector('input').value,'https://live.bilibili.com/6');
+  await editor.querySelector('form').fire();
+  const sent=ui.requests.find(request=>request.path==='/api/admin/subscriptions/1/bilibili' && request.method==='POST');
+  assert.equal(JSON.parse(sent.body).room,'https://live.bilibili.com/6');
+});
+
+test('live subscription list shows anchor text safely and removes only the chosen room',async()=>{
+  const ui=setup();await settle();const form=ui.byId('add-subscription');form.elements.user_openid.value='live-user';await form.fire();
+  ui.setLiveRooms([{room_id:7734200,anchor:'<img src=x onerror=alert(1)>'}]);
+  await ui.intervals.find(item=>item.ms===10000).fn();await settle();
+  const block=ui.byId('subscriptions').children[0].children.find(child=>child.className==='live-subscriptions');
+  const room=block.children.find(child=>child.textContent.includes('7734200'));
+  assert.match(room.textContent,/<img/);
+  await room.querySelector('button').fire('click');
+  assert.ok(ui.requests.some(request=>request.path==='/api/admin/subscriptions/1/bilibili/7734200'&&request.method==='DELETE'));
+});
+
+test('live diagnostics distinguish stale live state from a failed check and show permanent failures',async()=>{
+  const ui=setup();await settle();
+  assert.equal(ui.byId('live-rooms').textContent,'暂无被订阅的直播间。');
+  ui.setLiveDiagnostics({rooms:[{room_id:7734200,anchor:'测试主播',live_status:1,subscriber_count:2,checked_at:1700000000,last_success_at:1699999900,error:'查询失败'}],failures:[{target_id:7,room_id:7734200,error:'QQ 永久发送失败'}]});
+  await ui.intervals.find(item=>item.ms===10000).fn();await settle();
+  const text=ui.byId('live-rooms').children[0].textContent;
+  assert.match(text,/上次成功状态：直播中/);assert.match(text,/查询失败/);assert.match(text,/2 人/);
+  assert.match(ui.byId('live-failures').children[0].textContent,/通知目标 #7/);
+  ui.failLiveDiagnostics(true);
+  await ui.intervals.find(item=>item.ms===10000).fn();await settle();
+  assert.match(ui.byId('live-message').textContent,/刷新失败/);
+  assert.equal(ui.byId('live-rooms').children[0].textContent,text,'previous data remains visibly stale');
 });

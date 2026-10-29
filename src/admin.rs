@@ -17,6 +17,7 @@ use std::{
 #[derive(Clone)]
 pub struct Admin {
     auth: crate::admin_auth::Auth,
+    live: crate::bilibili::LiveMonitoring,
     store: Arc<Mutex<Store>>,
     pub config: crate::config_management::ConfigManagement,
     tracking_source: Arc<dyn crate::tracking::TrackingSource>,
@@ -42,6 +43,7 @@ impl Admin {
             auth = auth.with_trusted_proxy(proxy.parse()?);
         }
         Ok(Self {
+            live: crate::bilibili::LiveMonitoring::production(&active.database_path)?,
             auth,
             store: Arc::new(Mutex::new(store)),
             config: crate::config_management::ConfigManagement::new(config_path, active.clone())?,
@@ -55,6 +57,13 @@ impl Admin {
         source: Arc<dyn crate::tracking::TrackingSource>,
     ) -> Self {
         self.tracking_source = source;
+        self
+    }
+    pub fn with_live_source(mut self, source: Arc<dyn crate::bilibili::LiveSource>) -> Self {
+        self.live = crate::bilibili::LiveMonitoring::new(
+            &self.config.snapshot().applied.database_path,
+            source,
+        );
         self
     }
     pub fn with_auth(mut self, auth: crate::admin_auth::Auth) -> Self {
@@ -329,8 +338,61 @@ async fn permissions_save(
         .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(json!({"saved":true})))
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveInput {
+    room: String,
+}
+async fn live_diagnostics(State(admin): State<Admin>) -> ApiResult<Json<serde_json::Value>> {
+    Ok(Json(admin.live.diagnostics().await?))
+}
+async fn live_subscriptions(
+    State(admin): State<Admin>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> ApiResult<Json<Vec<crate::bilibili::LiveSnapshot>>> {
+    Ok(Json(admin.live.subscriptions(id).await?))
+}
+async fn live_add(
+    State(admin): State<Admin>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    headers: HeaderMap,
+    Json(body): Json<LiveInput>,
+) -> ApiResult<Json<serde_json::Value>> {
+    verify_write(&admin, &headers)?;
+    let snapshot = admin
+        .live
+        .subscribe_target(id, &body.room)
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error,"Live subscription failed");
+            ApiError(
+                StatusCode::BAD_REQUEST,
+                "直播订阅失败，请检查房间输入或稍后重试".into(),
+            )
+        })?;
+    Ok(Json(
+        json!({"room":snapshot,"message":format!("直播订阅已生效\n{}",snapshot.feedback())}),
+    ))
+}
+async fn live_remove(
+    State(admin): State<Admin>,
+    axum::extract::Path((id, room)): axum::extract::Path<(i64, u64)>,
+    headers: HeaderMap,
+) -> ApiResult<Json<serde_json::Value>> {
+    verify_write(&admin, &headers)?;
+    Ok(Json(json!({"removed":admin.live.remove(id,room).await?})))
+}
 fn router(admin: Admin) -> Router {
     Router::new()
+        .route("/api/admin/bilibili", get(live_diagnostics))
+        .route(
+            "/api/admin/subscriptions/{id}/bilibili",
+            get(live_subscriptions).post(live_add),
+        )
+        .route(
+            "/api/admin/subscriptions/{id}/bilibili/{room}",
+            axum::routing::delete(live_remove),
+        )
         .route(
             "/admin-session.js",
             get(|| async {

@@ -92,6 +92,7 @@ pub async fn run_gateway(gateway_url: &str, access_token: &str, database_path: &
         database_path,
         Arc::new(QqHttpSender::new(access_token.into())),
         None,
+        crate::bilibili::LiveMonitoring::production(database_path)?,
     )
     .await
 }
@@ -124,6 +125,7 @@ pub async fn run_gateway_with_sender_observed(
         database_path,
         sender,
         Some(health),
+        crate::bilibili::LiveMonitoring::production(database_path)?,
     )
     .await;
     if let Err(error) = &result {
@@ -140,12 +142,31 @@ pub async fn run_gateway_with_sender_observed(
     );
     result
 }
+/// Connect a gateway using the supplied external live-room source.
+pub async fn run_gateway_with_live_source(
+    gateway_url: &str,
+    access_token: &str,
+    database_path: &str,
+    sender: Arc<dyn MessageSink>,
+    source: Arc<dyn crate::bilibili::LiveSource>,
+) -> Result<()> {
+    gateway(
+        gateway_url,
+        access_token,
+        database_path,
+        sender,
+        None,
+        crate::bilibili::LiveMonitoring::new(database_path, source),
+    )
+    .await
+}
 async fn gateway(
     gateway_url: &str,
     access_token: &str,
     database_path: &str,
     sender: Arc<dyn MessageSink>,
     health: Option<&crate::qq_health::QqHealth>,
+    live: crate::bilibili::LiveMonitoring,
 ) -> Result<()> {
     let store = Store::open(database_path)?;
     let (mut socket, _) = tokio::time::timeout(
@@ -224,6 +245,31 @@ async fn gateway(
                                 .and_then(|v| v.as_str())
                                 .filter(|id| !id.is_empty());
                             if let (Some(openid), Some(message_id)) = (openid, message_id) {
+                                if matches!(
+                                    content.split_whitespace().next(),
+                                    Some("/bilibili" | "/unbilibili")
+                                ) {
+                                    let live = live.clone();
+                                    let content = content.to_owned();
+                                    let openid = openid.to_owned();
+                                    let message_id = message_id.to_owned();
+                                    let sender = sender.clone();
+                                    tokio::spawn(async move {
+                                        let result: Result<()> = async {
+                                            if let Some(reply) =
+                                                live.command(&content, &openid).await?
+                                            {
+                                                sender.reply(&openid, &reply, &message_id).await?;
+                                            }
+                                            Ok(())
+                                        }
+                                        .await;
+                                        if let Err(error) = result {
+                                            tracing::warn!(%error,"QQ live command failed; committed subscriptions remain saved");
+                                        }
+                                    });
+                                    continue;
+                                }
                                 if matches!(
                                     content.split_whitespace().next(),
                                     Some("/track" | "/untrack" | "/tracking")

@@ -53,8 +53,38 @@ pub fn render_notification(issue: &IssueNotification) -> String {
     base.chars().take(1800).collect()
 }
 
+/// Keep the shared proactive-send permit through validation and the HTTP request.
+/// Record completion rather than reservation time, so slow validation or token
+/// refresh cannot compress actual starts into less than three seconds.
+pub struct DeliveryPermit<'a> {
+    guard: Option<tokio::sync::MutexGuard<'a, Option<tokio::time::Instant>>>,
+    started: bool,
+}
+impl DeliveryPermit<'_> {
+    pub fn started(&mut self) {
+        self.started = true;
+    }
+}
+impl Drop for DeliveryPermit<'_> {
+    fn drop(&mut self) {
+        if self.started {
+            if let Some(guard) = &mut self.guard {
+                **guard = Some(tokio::time::Instant::now());
+            }
+        }
+    }
+}
 #[async_trait]
 pub trait MessageSink: Send + Sync {
+    /// Optional readiness gate for external send adapters.
+    async fn wait_until_ready(&self) {}
+    async fn reserve_delivery(&self) -> DeliveryPermit<'_> {
+        self.wait_until_ready().await;
+        DeliveryPermit {
+            guard: None,
+            started: false,
+        }
+    }
     async fn send(&self, user_openid: &str, text: &str) -> std::result::Result<(), SendError>;
     async fn reply(
         &self,
@@ -133,6 +163,7 @@ pub struct RefreshingQqHttpSender {
     app_secret: String,
     endpoint: String,
     token_endpoint: String,
+    last_delivery: tokio::sync::Mutex<Option<tokio::time::Instant>>,
 }
 
 impl RefreshingQqHttpSender {
@@ -178,6 +209,7 @@ impl RefreshingQqHttpSender {
             app_secret,
             endpoint,
             token_endpoint,
+            last_delivery: tokio::sync::Mutex::new(None),
         }
     }
 }
@@ -241,6 +273,16 @@ impl RefreshingQqHttpSender {
 
 #[async_trait]
 impl MessageSink for RefreshingQqHttpSender {
+    async fn reserve_delivery(&self) -> DeliveryPermit<'_> {
+        let last = self.last_delivery.lock().await;
+        if let Some(at) = *last {
+            tokio::time::sleep_until(at + std::time::Duration::from_secs(3)).await;
+        }
+        DeliveryPermit {
+            guard: Some(last),
+            started: false,
+        }
+    }
     async fn send(&self, user_openid: &str, text: &str) -> std::result::Result<(), SendError> {
         self.send_or_reply(user_openid, text, None).await
     }

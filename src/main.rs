@@ -65,6 +65,14 @@ async fn main() -> Result<()> {
     // Reconcile and recover claims before admin, gateway or delivery workers can run.
     let mut store = Store::open(&config.file.database_path)?.with_health(health.clone())?;
     store.start_monitoring_with_clock(&config.file.repositories, chrono::Utc::now)?;
+    let live = issue_watch::bilibili::LiveMonitoring::production(&config.file.database_path)?;
+    live.recover().await?;
+    let checks = live.clone();
+    tokio::spawn(async move {
+        if let Err(error) = checks.run_checks().await {
+            warn!(%error,"Live monitoring stopped");
+        }
+    });
     let health_bind =
         std::env::var("ISSUE_WATCH_HEALTH_BIND").unwrap_or_else(|_| "127.0.0.1:8080".into());
     health.set_poll_interval(config.file.poll_interval_seconds);
@@ -122,6 +130,18 @@ async fn main() -> Result<()> {
             config.qq_app_secret.clone(),
         ))
     });
+    if let Some(live_sender) = sender.clone() {
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                if let Err(error) = live.deliver(live_sender.as_ref()).await {
+                    warn!(%error,"Live delivery cycle failed");
+                }
+            }
+        });
+    }
     eprintln!("Starting monitoring loop");
     if let Some(gateway_sender) = sender.clone() {
         let configured_gateway = std::env::var("QQ_GATEWAY_URL").ok();

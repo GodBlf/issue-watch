@@ -16,6 +16,7 @@ pub struct Subscription {
     pub user_openid: String,
     pub qq_number_note: Option<String>,
     pub repositories: Vec<String>,
+    pub live_subscriptions: Vec<crate::bilibili::LiveSnapshot>,
 }
 
 pub struct Store {
@@ -126,6 +127,7 @@ impl Store {
             )?;
         }
         self.init_repository_subscriptions()?;
+        self.init_live()?;
         transaction.commit()?;
         Ok(())
     }
@@ -352,6 +354,9 @@ impl Store {
                 id: row.get(0)?,
                 user_openid: row.get(1)?,
                 qq_number_note: row.get(2)?,
+                live_subscriptions: self
+                    .live_subscriptions(row.get(0)?)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?,
                 repositories: self
                     .subscription_repositories(row.get(0)?)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?,
@@ -399,6 +404,8 @@ impl Store {
         )?;
         self.conn.execute(&format!("DELETE FROM repository_subscriptions WHERE subscription_id IN (SELECT id FROM broadcast_subscriptions WHERE {column}=?1)"), [&identity])?;
         self.conn.execute(&format!("DELETE FROM repository_subscription_migration_targets WHERE subscription_id IN (SELECT id FROM broadcast_subscriptions WHERE {column}=?1)"), [&identity])?;
+        self.conn.execute(&format!("UPDATE live_deliveries SET state='cancelled',next_attempt_at=NULL WHERE target_id IN (SELECT id FROM broadcast_subscriptions WHERE {column}=?1) AND state IN ('pending','retry','sending')"), [&identity])?;
+        self.conn.execute(&format!("DELETE FROM live_subscriptions WHERE target_id IN (SELECT id FROM broadcast_subscriptions WHERE {column}=?1)"), [&identity])?;
         let changed = self.conn.execute(
             &format!("DELETE FROM broadcast_subscriptions WHERE {column}=?1"),
             [&identity],

@@ -48,11 +48,14 @@ async fn deliver<S: MessageSink>(
     let mut delivered = 0;
     let mut last_started = None;
     for delivery in pending {
-        if !pace_delivery(last_started, || store.delivery_is_pending(&delivery)).await?
-            || !store.begin_delivery(&delivery)?
-        {
+        if !pace_delivery(last_started, || store.delivery_is_pending(&delivery)).await? {
             continue;
         }
+        let mut permit = sink.reserve_delivery().await;
+        if !store.begin_delivery(&delivery)? {
+            continue;
+        }
+        permit.started();
         last_started = Some(Instant::now());
         if let Some(h) = health {
             h.progress(true, "sending");

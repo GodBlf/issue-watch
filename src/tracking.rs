@@ -270,10 +270,14 @@ async fn deliver_tracking_inner<S: crate::qq::MessageSink + ?Sized>(
     for delivery in store.pending_tracking_deliveries(now)? {
         if !crate::queue::pace_delivery(last_started, || store.tracking_delivery_pending(&delivery))
             .await?
-            || !store.begin_tracking_delivery(&delivery)?
         {
             continue;
         }
+        let mut permit = sink.reserve_delivery().await;
+        if !store.begin_tracking_delivery(&delivery)? {
+            continue;
+        }
+        permit.started();
         last_started = Some(tokio::time::Instant::now());
         if let Some(health) = health {
             health.progress(true, "sending");
