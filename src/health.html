@@ -4,47 +4,225 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Issue Watch · 管理后台</title>
 <style>
-:root{font:16px/1.6 system-ui,sans-serif;color:#183047;background:#eff3f6}body{max-width:1000px;margin:40px auto;padding:0 20px}h1{margin-bottom:8px}header p{color:#526779}section{background:white;border:1px solid #d7e1e8;border-radius:12px;padding:24px;margin:20px 0}#status{font-size:30px;font-weight:700}#connection{background:#fff2d0;border-left:4px solid #b78215;padding:12px}dl{display:grid;grid-template-columns:140px 1fr;gap:8px}dd{margin:0;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}small{color:#526779}.component{border-top:1px solid #e4e9ed;padding:12px 0}.status-normal{color:#18724d}.status-warning{color:#976109}.status-error{color:#b32626}.status-unknown{color:#526779}h2{font-size:20px}h3{font-size:17px}
-</style>
-<style>
-form{display:flex;flex-wrap:wrap;gap:12px;align-items:end}label{display:flex;flex-direction:column;gap:4px;font-size:14px}input,button{font:inherit;padding:8px 12px;border:1px solid #bbcbd7;border-radius:6px;max-width:100%;box-sizing:border-box}input{background:#fff;color:#183047}button{background:#e8f0f7;color:#183047;cursor:pointer}button:disabled{opacity:.5;cursor:wait}button:focus-visible,input:focus-visible{outline:3px solid #619ace}#subscriptions p,#repositories p{overflow-wrap:anywhere}[role=status]{white-space:pre-wrap;overflow-wrap:anywhere}nav a{margin-right:16px}
-</style>
-<style>
-[hidden]{display:none!important}body{max-width:none;margin:0;padding:0 28px 24px 244px}main{max-width:1100px;margin:auto}.sidebar{position:fixed;left:0;top:0;bottom:0;width:192px;background:#142c40;padding:24px;color:white;display:flex;flex-direction:column;gap:12px}.sidebar strong{font-size:22px;margin-bottom:20px}.sidebar a{color:#d6e4ef;text-decoration:none;padding:10px;border-radius:8px}.sidebar a[aria-current=page]{background:#315b78;color:white}header{padding-top:20px}section{box-shadow:0 2px 12px #18304708}input:focus,button:focus-visible,a:focus-visible{outline:3px solid #619ace}button{background:#eaf3fa}details{margin:12px 0}summary{cursor:pointer;font-weight:600}.pager{display:flex;gap:12px;align-items:center;padding:12px 0}.toolbar{display:flex;gap:12px;align-items:center;margin:16px 0}
-@media(max-width:760px){body{padding:0 14px 20px}.sidebar{position:sticky;top:0;z-index:5;box-sizing:border-box;width:100%;height:auto;display:flex;flex-direction:row;flex-wrap:wrap;padding:10px;gap:4px}.sidebar strong{display:none}.sidebar a{padding:6px;font-size:14px}section{padding:16px}dl{grid-template-columns:110px 1fr}}
+
+:root{font:15px/1.6 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","PingFang SC",sans-serif;color:#1d1d1f;background:#f5f5f7;font-optical-sizing:auto;--blue:#0071e3;--secondary:#6e6e73;--line:#e8e8ed;--surface:#fff;--sidebar:rgba(237,238,242,.88)}
+
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;padding:0 40px 0 272px}
+a{color:var(--blue);text-underline-offset:3px}
+button,input,summary,a{-webkit-tap-highlight-color:transparent}
+button,input{font:inherit}
+button,summary{touch-action:manipulation}
+button{min-height:38px;padding:7px 16px;border:1px solid #dcdce1;border-radius:9px;background:#fff;color:#343438;cursor:pointer;box-shadow:0 1px 2px #00000004;transition:background-color 140ms ease-out,transform 140ms ease-out}
+button:active{transform:scale(.97)}
+button:disabled{opacity:.45;cursor:default;box-shadow:none}
+button:disabled:active{transform:none}
+button.primary,form>button:not([type=button]){background:var(--blue);border-color:var(--blue);color:white}
+button.danger{color:#c9342b;background:#fff;border-color:#ebd9d7}
+button:focus-visible,input:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid #0071e355;outline-offset:3px}
+input{min-width:0;max-width:100%;min-height:40px;border:1px solid #d2d2d7;border-radius:9px;padding:8px 12px;color:#1d1d1f;background:#fff;box-shadow:inset 0 1px 2px #00000003}
+input::placeholder{color:#86868b}
+input[type=checkbox]{min-height:18px;width:18px;height:18px;accent-color:var(--blue);box-shadow:none;flex-shrink:0}
+input[type=search]{padding-left:34px;background:#f5f5f7 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%2386868b' stroke-width='1.7'%3E%3Ccircle cx='7' cy='7' r='4.5'/%3E%3Cpath d='m10.5 10.5 4 4'/%3E%3C/svg%3E") no-repeat 11px center;border-color:transparent;width:300px}
+label{display:flex;flex-direction:column;gap:7px;font-size:13px;color:#515157}
+label:has(input[type=checkbox]){flex-direction:row;align-items:center;gap:9px}
+form{display:flex;flex-wrap:wrap;gap:12px;align-items:end;margin:16px 0}
+form>label{flex:0 1 320px}
+form>label:has(input[type=checkbox]){flex:none;min-height:38px}
+h1,h2,h3,p{margin-top:0}
+h1{font-size:34px;line-height:1.2;letter-spacing:-.035em;font-weight:700;margin-bottom:10px}
+h2{font-size:19px;line-height:1.4;letter-spacing:-.02em;margin-bottom:10px;font-weight:650}
+h3{font-size:15px;font-weight:600;letter-spacing:-.01em}
+p{margin-bottom:14px}
+small{font-size:12px;color:var(--secondary)}
+main{max-width:1160px;margin:0 auto;min-height:calc(100dvh - 80px)}
+.sidebar{position:fixed;inset:0 auto 0 0;z-index:10;width:232px;padding:30px 16px 20px;background:var(--sidebar);border-right:1px solid #dedee580;backdrop-filter:blur(20px);display:flex;flex-direction:column;gap:5px}
+.brand{display:flex;align-items:center;gap:11px;padding:0 12px 34px}
+.brand-mark{display:grid;place-items:center;flex-shrink:0;width:35px;height:35px;border-radius:11px;color:#fff;background:linear-gradient(145deg,#3699fa,#0067d8);box-shadow:0 3px 8px #0071e329;font-size:22px;font-weight:500}
+.brand strong{font-size:17px;letter-spacing:-.025em;display:block;line-height:1.3}
+.brand small{font-size:10px;letter-spacing:.12em}
+.nav-caption{padding:0 13px;margin:0 0 6px;color:#73737a;font-size:11px;font-weight:600;letter-spacing:.06em}
+.sidebar>a{display:flex;gap:12px;align-items:center;padding:11px 14px;color:#515157;text-decoration:none;font-size:14px;border-radius:9px;margin:0}
+.sidebar>a[aria-current=page]{background:#fff;color:#1d1d1f;box-shadow:0 2px 8px #1d1d1f08;font-weight:600}
+.sidebar>a[aria-current=page] svg{color:var(--blue)}
+.sidebar svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+.sidebar-foot{margin-top:auto;padding:20px 13px 0;border-top:1px solid #dcdce1;font-size:12px;color:var(--secondary)}
+.sidebar-foot span{display:block;color:#343438;font-weight:600;margin-bottom:3px}
+.topbar{height:77px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);gap:12px}
+.breadcrumb{font-size:12px;color:var(--secondary)}
+.breadcrumb span{padding:0 9px;color:#b4b4ba}
+.topbar-actions{display:flex;align-items:center;gap:16px}
+.refresh-note{font-size:11px;color:var(--secondary);display:flex;align-items:center;gap:6px}
+.refresh-note:before{content:"";width:6px;height:6px;border-radius:50%;background:#a1a1a6}
+.page-heading{padding:37px 0 10px}
+.eyebrow{color:var(--secondary);font-size:11px;font-weight:600;letter-spacing:.12em;margin-bottom:12px}
+.page-heading p{font-size:14px;color:var(--secondary)}
+section{padding:26px 28px;margin:20px 0;background:var(--surface);border:1px solid #e6e6eb;border-radius:18px;box-shadow:0 3px 12px #1d1d1f03}
+section>p:not([role]){font-size:13px;line-height:1.8;color:var(--secondary);max-width:880px}
+.section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:24px}
+.section-heading h2{margin:0}
+.section-heading small{display:flex;align-items:center;gap:6px}
+.section-heading small:before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:#a1a1a6}
+.health-summary{display:flex;align-items:center;gap:18px;padding:0 0 26px}
+.health-symbol{display:grid;place-items:center;width:58px;height:58px;border-radius:18px;background:#f5f5f7;color:#86868b;font-size:28px}
+.health-symbol[data-status=normal]{background:#eaf7ef;color:#24834b}
+.health-symbol[data-status=warning]{background:#fff5e5;color:#946200}
+.health-symbol[data-status=error]{background:#fdf0ef;color:#c9342b}
+#status{font-size:29px;line-height:1.3;letter-spacing:-.03em;font-weight:650}
+.health-summary small{display:block;margin-bottom:3px}
+.status-normal{color:#24834b}
+.status-warning{color:#946200}
+.status-error{color:#c9342b}
+.status-unknown{color:var(--secondary)}
+dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;border-top:1px solid var(--line);margin:0;padding-top:23px}
+dl>div{min-width:0}
+dt{font-size:12px;color:var(--secondary);margin-bottom:7px}
+dd{margin:0;font-size:13px;font-weight:500;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+#components{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.component{min-width:0;padding:20px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}
+.component p:first-child{font-weight:600;color:#1d1d1f;margin-bottom:10px}
+.component>button{margin-right:8px}
+.component p{font-size:13px;color:var(--secondary)}
+.diagnostic{padding:18px 20px;border:1px solid var(--line);border-radius:12px;background:#fdfdfd}
+.diagnostic summary{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:550}
+.diagnostic summary:after{content:"⌄";margin-left:auto;color:#86868b}
+.diagnostic[open] summary:after{content:"⌃"}
+.status-dot{width:7px;height:7px;flex:none;border-radius:50%;background:currentColor}
+.diagnostic .badge{margin-left:auto;font-size:11px;font-weight:500}
+.badge{padding:2px 8px;border-radius:6px;background:#f0f0f3}
+.diagnostic pre{font-size:12px;line-height:1.9;color:var(--secondary);margin:16px 0 0;padding-top:14px;border-top:1px solid var(--line);white-space:pre-wrap;overflow-wrap:anywhere;font-family:inherit}
+.toolbar{display:flex;gap:12px;align-items:center;margin:22px 0 12px}
+.toolbar label{font-size:0}
+.pager{display:flex;gap:10px;align-items:center;justify-content:flex-end;padding:12px 0;color:var(--secondary);font-size:12px}
+.pager button{min-height:32px;padding:4px 11px;font-size:12px}
+.pager span{order:-1;margin-right:auto}
+details{margin:16px 0}
+summary{cursor:pointer;font-size:13px;font-weight:550;list-style:none}
+summary::-webkit-details-marker{display:none}
+section>details{border:1px solid var(--line);border-radius:11px;padding:13px 16px;background:#fafafc}
+section>details>summary{color:var(--blue)}
+section>details>summary:before{content:"＋";margin-right:9px}
+section>details[open]>summary:before{content:"−"}
+details>form{margin-bottom:0}
+#subscriptions>.component{padding:18px 20px;border:1px solid var(--line);border-radius:12px;margin:12px 0}
+#subscriptions>.component>summary{overflow-wrap:anywhere;display:flex;align-items:center;gap:10px}
+#subscriptions>.component>summary:after{content:"编辑订阅 ⌄";margin-left:auto;white-space:nowrap;font-size:12px;color:var(--blue);font-weight:400}
+#subscriptions>.component[open]>summary:after{content:"收起 ⌃"}
+.repository-picker{padding-top:16px;border-top:1px solid var(--line)}
+.repository-picker>p,.repository-picker>div{flex-basis:100%}
+.repository-picker>div{display:flex;flex-wrap:wrap;gap:10px;max-height:240px;overflow:auto;padding:8px 0}
+.repository-picker>div>label{flex-direction:row;align-items:center;gap:8px;background:#f5f5f7;padding:8px 12px;border-radius:8px}
+.live-subscriptions{margin-top:20px;padding-top:18px;border-top:1px solid var(--line)}
+.live-subscriptions p>button{margin-left:12px;font-size:12px}
+#repositories>.component{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+#repositories>.component>p{flex:1 1 200px;margin:0;font-size:14px}
+#repositories>.component>button{margin:0}
+#poll-interval,#tracking-interval{padding:22px 0;margin:0;border-bottom:1px solid var(--line)}
+#reload-configuration{margin-top:22px}
+#live-rooms>p,#live-failures>p{padding:18px 20px;border:1px solid var(--line);border-radius:12px;font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.9}
+#live-failures>p{border-left:3px solid #c9342b}
+[role=status]{font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere;background:#f0f6fd;color:#31577f;border-radius:9px;padding:12px 16px;margin:16px 0}
+[role=status]:empty{display:none}
+[role=alert]{padding:14px 18px;border:1px solid #ecd7b0;border-radius:12px;background:#fff8e9;color:#805c19;font-size:13px;overflow-wrap:anywhere}
+#reasons:empty{display:none}
+#reasons{color:#946200;font-size:13px}
+footer{max-width:1160px;margin:24px auto;padding:0 0 24px;color:#86868b;font-size:11px;line-height:1.8}
+#logout{font-size:12px;background:transparent;border-color:transparent;padding:5px 8px;color:var(--secondary)}
+.skip-link{position:fixed;left:250px;top:-80px;z-index:30;background:white;padding:10px 16px;border-radius:8px}
+.skip-link:focus{top:12px}
+
+@media(hover:hover) and (pointer:fine){button:not(:disabled):hover{background:#f0f0f4}
+button.primary:hover,form>button:not([type=button]):not(:disabled):hover{background:#0077ed}
+button.danger:hover{background:#fff1ef}
+.sidebar>a:hover{background:#ffffff80}
+summary:hover{color:var(--blue)}
+}
+
+@media(max-width:1050px){body{padding-left:224px;padding-right:24px}
+.sidebar{width:200px}
+.brand{padding-left:4px;gap:8px}
+.brand strong{font-size:16px}
+section{padding:22px}
+#components{grid-template-columns:1fr}
+.refresh-note{display:none}
+}
+
+@media(max-width:700px){body{padding:0 18px}
+.sidebar{position:sticky;top:0;width:calc(100% + 36px);margin:0 -18px;padding:10px 12px;inset:0 auto auto;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:2px;overflow-x:auto;border-right:0;border-bottom:1px solid #dedee5;backdrop-filter:blur(20px)}
+.brand,.nav-caption,.sidebar-foot{display:none}
+.sidebar>a{flex:0 0 auto;flex-direction:column;gap:4px;padding:8px 2px;font-size:10px;white-space:nowrap}
+.sidebar svg{width:18px;height:18px}
+.topbar{height:58px}
+.page-heading{padding-top:28px}
+h1{font-size:29px}
+section{padding:20px;border-radius:15px;margin:16px 0}
+.section-heading{align-items:flex-start}
+.section-heading small{font-size:10px;white-space:nowrap}
+dl{grid-template-columns:1fr;gap:15px}
+dl>div{display:flex;justify-content:space-between;gap:16px}
+dt{margin:0;flex-shrink:0}
+dd{text-align:right}
+input{font-size:16px}button{min-height:44px}.toolbar input{width:100%}
+.toolbar label{width:100%}
+form>label{flex-basis:100%}
+form>button{flex-grow:1}
+.pager{gap:6px}
+.pager button{padding-inline:8px}
+#subscriptions>.component{padding:16px}
+#subscriptions>.component>summary{display:block;padding-right:0}
+#subscriptions>.component>summary:after{display:block;margin-top:8px}
+.skip-link{left:18px}
+.breadcrumb{font-size:11px}
+.health-symbol{width:50px;height:50px}
+.repository-picker>input{width:100%}
+footer{padding-bottom:20px}
+}
+
+@media(prefers-reduced-motion:reduce){*{transition:none!important}
+button:active{transform:none}
+}
+
+@media(prefers-reduced-transparency:reduce){.sidebar{background:#eeeef2;backdrop-filter:none}
+}
+
+@media(prefers-contrast:more){:root{--secondary:#49494e;--line:#a4a4ac}
+.sidebar{background:#eeeef2;backdrop-filter:none}
+section,.diagnostic,input,button{border-color:#92929a}
+}
+
 </style></head>
 <body>
-<nav class="sidebar" aria-label="后台导航"><strong>Issue Watch</strong><a href="#overview" data-target="overview">概览</a><a href="#repositories" data-target="repositories">仓库</a><a href="#subscriptions" data-target="subscriptions">通知目标</a><a href="#bilibili" data-target="bilibili">直播间</a><a href="#permissions" data-target="permissions">用户权限</a><a href="#settings" data-target="settings">设置</a></nav><main>
-<header><h1>Issue Watch 管理后台</h1><p>本次运行的状态 · 每 10 秒自动刷新</p><button id="logout" type="button">退出登录</button></header>
+<a class="skip-link" href="#main-content">跳转到主要内容</a><nav class="sidebar" aria-label="后台导航"><div class="brand"><span class="brand-mark" aria-hidden="true">⌁</span><div><strong>Issue Watch</strong><small>管理控制台</small></div></div><p class="nav-caption">工作空间</p><a href="#overview" data-target="overview"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>概览</a><a href="#repositories" data-target="repositories"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5a2 2 0 0 1 2-2h13v18H6a2 2 0 0 1-2-2zm0 12h15M8 7h7M8 10h5"/></svg>监控仓库</a><a href="#subscriptions" data-target="subscriptions"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4 7 8 6 8-6"/></svg>通知目标</a><a href="#bilibili" data-target="bilibili"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="15" rx="4"/><path d="m8 2 4 4 4-4M8 11v4m8-4v4"/></svg>直播间</a><a href="#permissions" data-target="permissions"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 7v5c0 5 9 9 9 9s9-4 9-9V7z"/><path d="m8 12 3 3 5-6"/></svg>用户权限</a><a href="#settings" data-target="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M9 3h6l1 3 3 1 2 5-2 5-3 1-1 3H9l-1-3-3-1-2-5 2-5 3-1z"/></svg>设置</a><div class="sidebar-foot"><span>专注每一条值得关注的动态</span>GitHub & Bilibili</div></nav><main id="main-content" tabindex="-1"><header><div class="topbar"><div class="breadcrumb">工作空间<span>/</span><b id="breadcrumb-current">概览</b></div><div class="topbar-actions"><span class="refresh-note">状态每 10 秒自动刷新</span><button id="logout" type="button">退出登录 ↗</button></div></div><div class="page-heading"><div class="eyebrow">ISSUE WATCH / ADMIN</div><h1 id="page-title">概览</h1><p id="page-description">掌握监控、连接与通知投递的当前状态。</p></div></header>
 <p id="session-expired" role="alert" hidden><span id="session-message"></span> <a href="/login">重新登录</a></p>
 <p id="connection" role="alert" hidden></p>
 <div data-view="overview">
-<section aria-live="polite"><h2>健康状态</h2><small>整体状态</small><div id="status" class="status-unknown">未知</div>
-<dl><dt>数据更新时间</dt><dd id="updated">尚无数据</dd><dt>启动时间</dt><dd id="started">未知</dd><dt>运行时长</dt><dd id="uptime">未知</dd></dl></section>
+<section aria-live="polite"><div class="section-heading"><h2>运行状态</h2><small>每 10 秒自动刷新</small></div><div class="health-summary"><div class="health-symbol" id="health-symbol" aria-hidden="true">⌁</div><div><small>整体健康</small><div id="status" class="status-unknown">未知</div></div></div><dl><div><dt>数据更新时间 · UTC</dt><dd id="updated">尚无数据</dd></div><div><dt>启动时间 · UTC</dt><dd id="started">未知</dd></div><div><dt>运行时长</dt><dd id="uptime">未知</dd></div></dl></section>
 <p id="reasons"></p>
-<section><h2>业务观察</h2><div id="components">尚无检查结果，等待业务观察。</div></section>
+<section><div class="section-heading"><h2>服务与连接</h2><small>展开查看诊断详情</small></div><div id="components">尚无检查结果，等待业务观察。</div></section>
 </div><div data-view="subscriptions" hidden><section id="subscription-management"><h2>通知目标</h2>
 <p>为每个通知目标分别选择仓库，没有仓库订阅时不接收 Issue 通知；直播订阅单独配置，也可通过 QQ 命令自行添加。新用户需管理员配置仓库。发送使用当前机器人的 user_openid，QQ 号仅作备注。保存订阅不代表已验证发送权限。</p>
 <details><summary>添加通知目标</summary><form id="add-subscription"><label>user_openid <input name="user_openid" required maxlength="256" autocomplete="off"></label>
 <label>QQ 号备注（选填） <input name="qq_number_note" maxlength="256" autocomplete="off"></label><button>添加接收者</button></form></details>
-<p id="subscription-message" role="status" aria-live="polite"></p><div class="toolbar"><label>搜索 <input id="subscription-search" type="search" placeholder="搜索列表" autocomplete="off"></label></div><div class="pager"><button id="subscription-previous" type="button">上一页</button><span id="subscription-page"></span><button id="subscription-next" type="button">下一页</button></div><div id="subscriptions">正在加载接收者…</div></section>
+<p id="subscription-message" role="status" aria-live="polite"></p><div class="toolbar"><label>搜索 <input id="subscription-search" type="search" placeholder="搜索名称或关键词…" autocomplete="off"></label></div><div class="pager"><button id="subscription-previous" type="button">上一页</button><span id="subscription-page"></span><button id="subscription-next" type="button">下一页</button></div><div id="subscriptions">正在加载接收者…</div></section>
 </div><div data-view="bilibili" hidden><section><h2>Bilibili 共享直播间</h2><p>在通知目标中编辑直播订阅，也可私聊使用 /bilibili 房间号。最后一人退订后停止检查。接口失败时保留上次成功状态。</p><p id="live-message" role="status" aria-live="polite"></p><div id="live-rooms" style="white-space:pre-wrap">正在读取直播间…</div></section><section><h2>最近 100 条永久投递失败</h2><div id="live-failures">正在读取…</div></section></div><div data-view="settings" hidden><section id="configuration-management"><h2>监控配置</h2>
 <p id="configuration-stage" role="status" aria-live="polite">正在读取配置…</p>
 <form id="poll-interval"><label>轮询间隔（秒，1–86400） <input name="seconds" type="number" min="1" max="86400" step="1" required disabled></label><button disabled>保存间隔</button></form>
 <form id="tracking-interval"><label>Issue 追踪检查间隔（秒，1–86400） <input name="seconds" type="number" min="1" max="86400" step="1" required disabled></label><button disabled>保存追踪间隔</button></form>
 <button id="reload-configuration" type="button">刷新配置／放弃未保存的间隔</button>
 <p id="configuration-message" role="status" aria-live="polite"></p>
-</section></div><div data-view="repositories" hidden><section id="repository-list-panel"><h2>共享监控仓库</h2><p>首次添加不发送历史 Issue；重新添加曾监控的仓库会恢复原进度，补发停用期间的新建 Issue。移除后新建 Issue 通知继续投递，该仓库追踪及待发送动态取消。至少保留一个仓库。</p>
+</section></div><div data-view="repositories" hidden><section id="repository-list-panel"><h2>共享监控仓库</h2><p>首次添加与重新添加均从生效时间开始，不补发历史 Issue。移除会取消未发送通知、共享追踪及仓库订阅。至少保留一个监控仓库。</p>
 <details><summary>添加监控仓库</summary><form id="add-repository"><label>监控仓库（owner/name） <input name="repository" required maxlength="256" placeholder="owner/name" autocomplete="off"></label><button disabled>添加仓库</button></form></details><p id="repository-message" role="status"></p>
-<div class="toolbar"><label>搜索 <input id="repository-search" type="search" placeholder="搜索列表" autocomplete="off"></label></div><div class="pager"><button id="repository-previous" type="button">上一页</button><span id="repository-page"></span><button id="repository-next" type="button">下一页</button></div><div id="repositories">正在加载仓库…</div>
+<div class="toolbar"><label>搜索 <input id="repository-search" type="search" placeholder="搜索名称或关键词…" autocomplete="off"></label></div><div class="pager"><button id="repository-previous" type="button">上一页</button><span id="repository-page"></span><button id="repository-next" type="button">下一页</button></div><div id="repositories">正在加载仓库…</div>
 </section>
-<section><button id="repository-back" type="button" hidden>返回仓库列表</button><h2 id="tracking-repository">Issue 追踪</h2><p>共享追踪动态仅发送给订阅对应仓库的通知目标。Issue 关闭后自动清理。读取动态及关联 PR 需要配置 GitHub Token。</p><details><summary>添加 Issue 追踪</summary><form id="add-tracking"><label>完整 Issue URL <input name="url" type="url" required maxlength="2048" placeholder="https://github.com/owner/repo/issues/123"></label><button>添加追踪</button></form></details><p id="tracking-message" role="status" aria-live="polite"></p><div class="toolbar"><label>搜索 <input id="tracking-search" type="search" placeholder="搜索列表" autocomplete="off"></label></div><div class="pager"><button id="tracking-previous" type="button">上一页</button><span id="tracking-page"></span><button id="tracking-next" type="button">下一页</button></div><div id="tracking-list">正在读取追踪…</div></section></div><div data-view="permissions" hidden><section><h2>用户权限</h2><p>所有 QQ 用户默认无权限。添加与取消分别授权；取消权限可停止任何共享追踪。删除通知目标或撤销权限不删除追踪。</p><details><summary>录入用户权限</summary><form id="add-permission"><label>user_openid <input name="user_openid" required maxlength="256" autocomplete="off"></label><label>添加追踪 <input name="can_add" type="checkbox"></label><label>取消任意共享追踪 <input name="can_cancel" type="checkbox"></label><button>保存权限</button></form></details><p id="permission-message" role="status" aria-live="polite"></p><div class="toolbar"><label>搜索 <input id="permissions-search" type="search" placeholder="搜索列表" autocomplete="off"></label></div><div class="pager"><button id="permissions-previous" type="button">上一页</button><span id="permissions-page"></span><button id="permissions-next" type="button">下一页</button></div><div id="permissions-list">正在读取权限…</div></section></div></main><small>连接失败仅表示网页暂时无法取得状态，不能确定程序、服务器或 SSH 隧道的具体情况。服务器不可达时，新打开页面可能直接显示浏览器连接错误。时间使用 UTC。</small>
+<section><button id="repository-back" type="button" hidden>返回仓库列表</button><h2 id="tracking-repository">Issue 追踪</h2><p>共享追踪动态仅发送给订阅对应仓库的通知目标。Issue 关闭后自动清理。读取动态及关联 PR 需要配置 GitHub Token。</p><details><summary>添加 Issue 追踪</summary><form id="add-tracking"><label>完整 Issue URL <input name="url" type="url" required maxlength="2048" placeholder="https://github.com/owner/repo/issues/123"></label><button>添加追踪</button></form></details><p id="tracking-message" role="status" aria-live="polite"></p><div class="toolbar"><label>搜索 <input id="tracking-search" type="search" placeholder="搜索名称或关键词…" autocomplete="off"></label></div><div class="pager"><button id="tracking-previous" type="button">上一页</button><span id="tracking-page"></span><button id="tracking-next" type="button">下一页</button></div><div id="tracking-list">正在读取追踪…</div></section></div><div data-view="permissions" hidden><section><h2>用户权限</h2><p>所有 QQ 用户默认无权限。添加与取消分别授权；取消权限可停止任何共享追踪。删除通知目标或撤销权限不删除追踪。</p><details><summary>录入用户权限</summary><form id="add-permission"><label>user_openid <input name="user_openid" required maxlength="256" autocomplete="off"></label><label>添加追踪 <input name="can_add" type="checkbox"></label><label>取消任意共享追踪 <input name="can_cancel" type="checkbox"></label><button>保存权限</button></form></details><p id="permission-message" role="status" aria-live="polite"></p><div class="toolbar"><label>搜索 <input id="permissions-search" type="search" placeholder="搜索名称或关键词…" autocomplete="off"></label></div><div class="pager"><button id="permissions-previous" type="button">上一页</button><span id="permissions-page"></span><button id="permissions-next" type="button">下一页</button></div><div id="permissions-list">正在读取权限…</div></section></div></main><footer>Issue Watch · 时间使用 UTC。连接失败仅表示网页暂时无法取得状态，不代表服务已停止。<br>服务器不可达时，新打开页面可能直接显示浏览器连接错误。</footer>
 <script src="/admin-session.js"></script>
 <script>
 const labels = {normal:'正常',warning:'警告',error:'异常',unknown:'未知'};
 const names = {issue_tracking:'Issue 追踪',github:'GitHub 检查',qq_gateway:'QQ 连接',qq_binding:'通知目标绑定',qq_auth:'QQ 鉴权',qq_delivery:'实际通知发送',notification_queue:'通知队列',progress:'业务推进',overall:'整体健康'};
 const fieldNames = {batch_id:'动态批次',kind:'通知类型',title:'标题',url:'链接',started_at:'追踪开始时间',last_success_at:'最近成功检查',status:'状态',error:'当前错误',repository:'监控仓库',repositories:'监控仓库',last_attempt_at:'最近尝试时间',last_success_at:'最近成功时间',consecutive_failures:'连续失败次数',pending:'待发送',retrying:'重试中',permanent_failed:'永久失败',connected:'连接状态',bound:'绑定状态',subscriber_count:'通知目标数',subscribed_target_count:'已订阅仓库的目标数',repository_subscription_count:'仓库订阅关系数',subscription_id:'订阅编号',result:'结果',at:'观察时间',active:'正在处理',stage:'当前步骤',last_progress_at:'最近推进时间',threshold_seconds:'卡住阈值（秒）',stalled:'已停止推进',failures:'失败记录',number:'Issue 编号',state:'通知状态',enqueued_at:'入队时间',sent_at:'发送时间',last_error:'失败原因',sent:'已发送',errors:'失败记录'};
 const values = {...labels,unverified:'未验证',verified:'已验证',failed:'失败',sent:'已发送',retrying:'重试中',permanent_failed:'永久失败',permanent_failure:'永久失败',pending:'待发送',waiting:'等待下一轮检查',working:'正在处理',checking_repository:'检查仓库',page_complete:'完成一页检查',repository_complete:'完成仓库检查',sending:'发送通知',delivery_started:'开始投递',delivery_complete:'投递结束',notification_sent:'通知发送完成',notification_complete:'通知处理完成'};
+const diagnosticOpen = new Set();
 let lastData = null;
 let loading = false;
 function renderDetails(value, prefix='') {
@@ -60,9 +238,11 @@ function render(data) {
   const status = labels[data.status] ? data.status : 'unknown';
   document.getElementById('status').textContent = labels[status];
   document.getElementById('status').className = 'status-'+status;
+  document.getElementById('health-symbol').dataset.status = status;
   document.getElementById('updated').textContent = data.updated_at;
   document.getElementById('started').textContent = data.started_at;
-  document.getElementById('uptime').textContent = data.uptime_seconds+' 秒';
+  const seconds = Math.max(0, Math.floor(data.uptime_seconds));
+  document.getElementById('uptime').textContent = seconds < 60 ? seconds+' 秒' : [seconds >= 86400 ? Math.floor(seconds/86400)+' 天' : '', seconds >= 3600 ? Math.floor(seconds%86400/3600)+' 小时' : '', Math.floor(seconds%3600/60)+' 分钟'].filter(Boolean).join(' ');
   const reasons=data.components?.overall?.details?.reasons||[];
   document.getElementById('reasons').textContent=reasons.map(reason=>(names[reason.component]||reason.component)+'：'+(labels[reason.status]||'未知')).join('；');
   const container=document.getElementById('components');
@@ -70,8 +250,15 @@ function render(data) {
   const entries=Object.entries(data.components||{}).filter(([name])=>!['overall','github_progress','notification_progress'].includes(name));
   if (!entries.length) container.textContent='尚无检查结果，等待业务观察。';
   for (const [name,component] of entries) {
-    const block=document.createElement('div'); block.className='component';
-    const heading=document.createElement('h3'); heading.textContent=(names[name]||name)+' · '+(labels[component.status]||'未知');
+    const block=document.createElement('details'); block.className='component diagnostic';
+    block.open = diagnosticOpen.has(name);
+    block.addEventListener('toggle', () => { if(block.open) diagnosticOpen.add(name); else diagnosticOpen.delete(name); });
+    const heading=document.createElement('summary');
+    const state=labels[component.status] ? component.status : 'unknown';
+    const dot=document.createElement('span'); dot.className='status-dot status-'+state; dot.setAttribute('aria-hidden','true');
+    const title=document.createElement('span'); title.textContent=names[name]||name;
+    const badge=document.createElement('span'); badge.className='badge status-'+state; badge.textContent=labels[state];
+    heading.append(dot,title,badge);
     const detail=document.createElement('pre'); detail.textContent=renderDetails(component.details);
     block.append(heading,detail); container.append(block);
   }
@@ -89,6 +276,7 @@ async function refresh() {
   } catch (_) {
     document.getElementById('status').textContent='未知';
     document.getElementById('status').className='status-unknown';
+    document.getElementById('health-symbol').dataset.status='unknown';
     const banner=document.getElementById('connection'); banner.hidden=false;
     banner.textContent=lastData?'连接失败：下方为上次取得的数据，当前状态未知。':'未知 / 不可达：尚未取得状态数据。';
   } finally { loading=false; }

@@ -30,7 +30,7 @@
       const title=document.createElement('p');title.textContent=`${row.repository} #${row.number} · ${row.title}`;
       const link=document.createElement('a');link.href=row.url;link.target='_blank';link.rel='noopener';link.textContent='查看 Issue';
       const status=document.createElement('p');status.textContent=`最近成功检查：${row.last_success_at||'尚未检查'}${row.error?' · 异常：'+row.error:''}`;
-      const cancel=document.createElement('button');cancel.type='button';cancel.textContent='取消追踪';
+      const cancel=document.createElement('button');cancel.type='button';cancel.className='danger';cancel.textContent='取消追踪';
       cancel.addEventListener('click',()=>{
         if(!confirm(`取消 ${row.repository} #${row.number} 的共享追踪？所有订阅者将停止收到动态，未发送动态将取消。`))return;
         operation(block,'tracking-message',async()=>{await request('/api/admin/tracking/'+row.id,'DELETE');byId('tracking-message').textContent='已取消共享追踪。';});

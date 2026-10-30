@@ -36,7 +36,8 @@ async fn status_is_unknown_and_read_only_before_business_observations() {
         .text()
         .await
         .unwrap();
-    assert!(page.contains("健康状态"));
+    assert!(page.contains("运行状态"));
+    assert!(page.contains("服务与连接"));
     task.abort();
 }
 

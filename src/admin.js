@@ -19,6 +19,7 @@
   const noteDrafts = new Map();
   const repositoryDrafts = new Map();
   const liveDrafts = new Map();
+  const expandedSubscriptions = new Set();
   function livePicker(row) {
     const block=document.createElement('div'); block.className='live-subscriptions';
     const heading=document.createElement('p'); heading.textContent='直播订阅'; block.append(heading);
@@ -49,6 +50,7 @@
   }
   function repositoryPicker(row, choices) {
     const form = document.createElement('form');
+    form.className = 'repository-picker';
     const selected = new Set(repositoryDrafts.get(row.id) || row.repositories || []);
     const search = document.createElement('input'); search.type = 'search'; search.placeholder = '搜索可订阅仓库'; search.setAttribute?.('aria-label','搜索可订阅仓库');
     const all = document.createElement('button'); all.type = 'button'; all.textContent = '全选';
@@ -101,18 +103,21 @@
       if (subscriptionWrites) return;
       const container = byId('subscriptions');
       container.replaceChildren();
-      if (!rows.length) container.textContent = '尚无通知目标。';
+      if (!rows.length) container.textContent = allRows.length ? '没有匹配的通知目标，请尝试其他关键词。' : '尚无通知目标。';
       for (const row of rows) {
-        const block = document.createElement('div'); block.className = 'component';
-        const identity = document.createElement('p');
-        identity.textContent = `通知目标 #${row.id} · ${row.user_openid} · QQ 号备注：${row.qq_number_note || '未填写'}`;
+        const block = document.createElement('details'); block.className = 'component';
+        block.open = expandedSubscriptions.has(row.id) || noteDrafts.has(row.id) || repositoryDrafts.has(row.id) || liveDrafts.has(row.id);
+        block.addEventListener('toggle', () => { if (block.open) expandedSubscriptions.add(row.id); else expandedSubscriptions.delete(row.id); });
+        const identity = document.createElement('summary');
+        identity.textContent = `通知目标 #${row.id} · ${row.qq_number_note || row.user_openid} · ${row.repositories?.length || 0} 个仓库`;
+        const identifier = document.createElement('p'); identifier.textContent = `user_openid：${row.user_openid}`;
         const form = document.createElement('form');
         const noteLabel = document.createElement('label'); noteLabel.textContent = 'QQ 号备注（选填） ';
         const note = document.createElement('input'); note.value = noteDrafts.has(row.id) ? noteDrafts.get(row.id) : row.qq_number_note || ''; note.maxLength = 256;
         note.addEventListener('input', () => { noteDrafts.set(row.id, note.value); markDirty(form,true); });
         noteLabel.append(note);
         const save = document.createElement('button'); save.textContent = '保存备注';
-        const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '移除';
+        const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '移除'; remove.className = 'danger';
         form.append(noteLabel, save, remove);
         form.addEventListener('submit', event => {
           event.preventDefault(); operation(form, 'subscription-message', async () => {
@@ -130,7 +135,7 @@
           });
         });
         const subscribed = document.createElement('p'); subscribed.textContent = row.repositories?.length ? `订阅 ${row.repositories.length} 个仓库：${row.repositories.join('、')}` : '未订阅任何仓库';
-        block.append(identity, form, subscribed, repositoryPicker(row,choices),livePicker(row)); container.append(block);
+        block.append(identity, form, identifier, subscribed, repositoryPicker(row,choices),livePicker(row)); container.append(block);
       }
     } catch (error) { byId('subscription-message').textContent = '接收者刷新失败：'+error.message; }
     finally { subscriptionLoading = false; }
@@ -180,7 +185,7 @@
     if (data.saved) for (const repository of listPage('repository',data.saved.repositories,row=>row)) {
       const block = document.createElement('div'); block.className = 'component';
       const name = document.createElement('p'); name.textContent = repository;
-      const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '移除仓库';
+      const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '移除仓库'; remove.className = 'danger';
       remove.disabled = data.saved.repositories.length <= 1 || configurationBusy;
       if (data.saved.repositories.length <= 1) remove.title = '至少保留一个监控仓库';
       remove.addEventListener('click', () => {
@@ -191,7 +196,7 @@
           await saveConfiguration(block,{version:data.version,repositories:data.saved.repositories.filter(name=>name!==repository)});
         });
       });
-      const open=document.createElement('button');open.type='button';open.textContent='管理追踪';open.addEventListener('click',()=>{window.location.hash='repositories?repo='+encodeURIComponent(repository);});
+      const open=document.createElement('button');open.type='button';open.className='primary';open.textContent='管理追踪';open.addEventListener('click',()=>{window.location.hash='repositories?repo='+encodeURIComponent(repository);});
       block.append(name,remove,open); container.append(block);
     } else container.textContent = '配置无法读取，请修正文件后刷新。';
   }

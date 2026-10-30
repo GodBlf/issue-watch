@@ -6,12 +6,12 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 test('dashboard preserves stale data on disconnect and recovers automatically', async () => {
   const elements = new Map();
-  const element = id => { if (!elements.has(id)) elements.set(id, {textContent: '', hidden: false, replaceChildren() {}, append() {}}); return elements.get(id); };
+  const element = id => { if (!elements.has(id)) elements.set(id, {textContent: '', dataset: {}, hidden: false, replaceChildren() {}, append() {}}); return elements.get(id); };
   const created = [];
   let response = new Error('offline');
   let scheduled;
   const sandbox = {
-    document: {getElementById: element, createElement: () => { const node = {textContent: '', append() {}}; Object.defineProperty(node, 'innerHTML', {set() {throw new Error('external text must not be rendered as HTML');}}); created.push(node); return node; }},
+    document: {getElementById: element, createElement: () => { const node = {textContent: '', events: {}, addEventListener(name, fn) {this.events[name]=fn;}, setAttribute() {}, append() {}}; Object.defineProperty(node, 'innerHTML', {set() {throw new Error('external text must not be rendered as HTML');}}); created.push(node); return node; }},
     fetch: async () => {if(response instanceof Error) throw response; return {ok: true, json: async () => response};},
     AbortSignal: {timeout: () => ({})},
     setInterval: (callback, milliseconds) => {scheduled = {callback, milliseconds};},
@@ -28,6 +28,10 @@ test('dashboard preserves stale data on disconnect and recovers automatically', 
   assert.equal(element('status').textContent, '正常');
   assert.equal(element('updated').textContent, '2026-10-01T01:00:00Z');
   assert.ok(created.some(node => node.textContent.includes('<img src=x onerror=alert(1)>')), 'external error is displayed as literal text');
+  const diagnostic = created.find(node => node.className === 'component diagnostic');
+  diagnostic.open = true; diagnostic.events.toggle();
+  await scheduled.callback();
+  assert.equal(created.filter(node => node.className === 'component diagnostic').at(-1).open, true, 'automatic refresh preserves expanded diagnostic details');
   response = new Error('offline');
   await scheduled.callback();
   assert.equal(element('status').textContent, '未知');

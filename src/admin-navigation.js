@@ -2,13 +2,28 @@
   const views = [...document.querySelectorAll('[data-view]')];
   const links = [...document.querySelectorAll('[data-target]')];
   let current;
+  const descriptions = {
+    overview: '掌握监控、连接与通知投递的当前状态。',
+    repositories: '管理共享监控仓库，以及值得持续关注的 Issue。',
+    subscriptions: '为每个通知目标配置仓库与直播订阅。',
+    bilibili: '查看共享直播间的最近状态与通知投递情况。',
+    permissions: '分别管理添加与取消共享 Issue 追踪的权限。',
+    settings: '调整检查频率，查看配置的实际应用状态。'
+  };
   let currentHash = location.hash;
   function dirty() { return document.querySelector('[data-dirty="true"]') || window.issueWatchHasDrafts?.(); }
   function show(name) {
     if (!views.some(view => view.dataset.view === name)) name = 'overview';
+    if (current && current !== name) window.scrollTo?.(0, 0);
     current = name;
     views.forEach(view => { view.hidden = view.dataset.view !== name; });
     links.forEach(link => link.setAttribute('aria-current', link.dataset.target === name ? 'page' : 'false'));
+    const title = links.find(link => link.dataset.target === name)?.textContent?.trim() || '概览';
+    const update = (id, text) => { const node = document.getElementById?.(id); if (node) node.textContent = text; };
+    update('page-title', title);
+    update('breadcrumb-current', title);
+    update('page-description', descriptions[name]);
+    document.title = `${title} · Issue Watch`;
   }
   links.forEach(link => link.addEventListener('click', event => {
     event.preventDefault();
